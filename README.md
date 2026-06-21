@@ -1,43 +1,68 @@
 # Doorables Vault
 
-Doorables Vault is a standalone offline-first Progressive Web App for tracking a personal Disney Doorables collection and inventory. It uses only HTML, CSS, vanilla JavaScript, IndexedDB, a service worker, and a web app manifest.
+Doorables Vault is a standalone offline-first Progressive Web App for tracking a personal Disney Doorables collection and inventory.
 
-There is no backend, account system, cloud database, Firebase, Supabase, Base44 service, external API, or paid service.
+There is no backend, account system, cloud database, Firebase, Supabase, Base44 service, external API, CDN dependency, paid service, or subscription.
 
-## Files
+## What Doorables Vault Is
+
+- A personal Disney Doorables collection and inventory tracker
+- Offline-first and designed to run locally in your browser
+- Stored locally with IndexedDB inside the browser profile
+- Built with HTML, CSS, vanilla JavaScript, IndexedDB, a service worker, and a web app manifest
+- Self-contained: no backend, account, cloud database, or subscription required
+
+## Project Files
 
 - `index.html` - app shell and PWA metadata
 - `styles.css` - mobile-first dark UI
-- `app.js` - screen rendering, filters, search, editing, import/export, bulk mode
-- `db.js` - IndexedDB setup, seed data, import/export helpers, image blob stubs
+- `app.js` - screens, filters, search, editing, import/export, and bulk mode
+- `db.js` - IndexedDB setup, seed data, validation, reference data, and image blob stubs
 - `service-worker.js` - offline cache for app files
 - `manifest.json` - installable PWA manifest
-- `README.md` - setup and usage notes
+- `icons/icon-192.png` and `icons/icon-512.png` - local PWA icons
+- `README.md` - this guide
 
-## Run Locally
+## How to Run Locally
 
-From this folder, start a local web server:
+1. Open a terminal, PowerShell, or command prompt.
+2. Change into the Doorables Vault project folder, or open the terminal directly in that folder.
+3. Start a local web server:
 
 ```bash
 python -m http.server 8000
 ```
 
-Then open:
+4. Open this address in your browser:
 
 ```text
 http://localhost:8000
 ```
 
-A local server is recommended because service workers do not run from a normal `file://` browser tab.
+A local server is recommended because service workers do not run correctly from a normal `file://` browser tab.
 
-## Install as a PWA
+## How to Host Temporarily on GitHub Pages
 
-1. Open `http://localhost:8000` in Chrome, Edge, or another PWA-capable browser.
-2. Look for the install icon in the address bar or open the browser menu.
-3. Choose Install or Add to Home Screen.
-4. Launch Doorables Vault from the installed app icon.
+1. Create a GitHub repository.
+2. Upload all Doorables Vault app files.
+3. Keep `index.html` in the repository root.
+4. In GitHub, go to the repository Settings.
+5. Open Pages.
+6. Choose Deploy from a branch.
+7. Select the `main` branch and the root folder.
+8. Save, then open the GitHub Pages URL after it finishes deploying.
 
-After the first successful load, the service worker caches the app shell for offline use.
+GitHub Pages only hosts the static app files. Your collection data still lives in each browser's IndexedDB unless you export and import it.
+
+## How to Install on Android Chrome
+
+1. Open the hosted app URL in Chrome on Android.
+2. Tap the three-dot menu.
+3. Tap Install App or Add to Home Screen.
+4. Confirm installation.
+5. Open Doorables Vault from the installed icon.
+
+Install App is preferred when Chrome offers it because it behaves more like a standalone app than a simple home-screen shortcut.
 
 ## Local Data Storage
 
@@ -49,9 +74,44 @@ IndexedDB stores:
 - `collection` - personal collection and inventory records
 - `activity` - local activity history
 - `images` - placeholder store for future image blobs
-- `meta` - setup flags such as sample data seeding
+- `meta` - settings flags such as sample-data seeding and last backup/export date
 
-Clearing browser site data for this app will remove the local vault data. Use Settings export buttons before clearing browser data or moving to another device.
+Clearing browser site data for this app will remove the local vault data.
+
+## How to Back Up Data
+
+Use the Settings tab export options:
+
+- Export Master Database JSON
+- Export Collection JSON
+
+Export collection data before deleting local vault data or replacing collection data. Export master database data before replacing the master database.
+
+Store backups somewhere safe, such as Google Drive, OneDrive, Dropbox, or an external drive.
+
+IndexedDB data lives inside the browser. It does not automatically travel with the project folder, GitHub repository, or ZIP file. Copying the app folder moves the app files, not your browser's saved collection data.
+
+To move collection data to another device, export data from Settings on the old device, then import it from Settings on the new device.
+
+## What Not To Delete
+
+Do not delete or lose these app files:
+
+- `index.html`
+- `app.js`
+- `db.js`
+- `styles.css`
+- `manifest.json`
+- `service-worker.js`
+- `icons/icon-192.png`
+- `icons/icon-512.png`
+
+Do not delete or lose these personal backup files:
+
+- Exported collection backups
+- Exported master database backups
+
+Copying the app folder is useful for moving or hosting the app, but it does not copy IndexedDB data from the browser. Use Settings export/import to move collection data between devices.
 
 ## Import and Export
 
@@ -89,7 +149,15 @@ Collection record shape:
 }
 ```
 
-The `id` in a collection record should match a master database record ID.
+The `id` in a collection record must match a master database record ID.
+
+Merge imports add new records and update matching IDs without deleting unrelated existing records. Replace imports delete the existing data of that type before importing the file, so export a backup first.
+
+## Category and Series Reference Data
+
+Official category order, rarity order, and series-by-category order are defined in `db.js` near the top of the file. The `categories`, `rarities`, and `seriesByCategory` constants drive app navigation, dropdown suggestions, filters, import validation warnings, Collection grouping, Smart Bulk Mode ordering, and Analytics grouping.
+
+To add a future series, add its name to the correct category array in `seriesByCategory`. New imported categories or series that are not in this reference list are allowed only after a warning confirmation, then they appear after official values in filters and groups.
 
 ## Included Sample Data
 

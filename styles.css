@@ -371,6 +371,10 @@ button {
   min-width: 0;
 }
 
+.item-copy {
+  min-width: 0;
+}
+
 .item-title-row {
   display: flex;
   align-items: flex-start;
@@ -400,8 +404,11 @@ button {
 
 .qty-control {
   display: inline-grid;
-  grid-template-columns: 32px minmax(28px, auto) 32px;
+  grid-template-columns: 32px 28px 32px;
   align-items: center;
+  flex: 0 0 92px;
+  width: 92px;
+  min-width: 92px;
   min-height: 32px;
   overflow: hidden;
   border: 1px solid var(--line);
@@ -410,12 +417,15 @@ button {
 }
 
 .qty-control button {
+  display: grid;
+  place-items: center;
   width: 32px;
   height: 32px;
   border: 0;
   background: transparent;
   color: var(--text);
   cursor: pointer;
+  line-height: 1;
 }
 
 .qty-control span {
@@ -423,6 +433,25 @@ button {
   text-align: center;
   color: var(--gold);
   font-weight: 700;
+}
+
+.bulk-card {
+  cursor: default;
+}
+
+.bulk-item-body {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 92px;
+  align-items: center;
+  gap: 10px;
+}
+
+.bulk-copy {
+  min-width: 0;
+}
+
+.bulk-qty-control {
+  justify-self: end;
 }
 
 .category-block,

@@ -6,6 +6,7 @@
 
   // IndexedDB schema: one store for each durable local data category.
   // Master and collection share the same id so inventory can be joined locally.
+  // Meta holds small settings flags such as seeding state and last backup time.
   const STORES = {
     master: "master",
     collection: "collection",
@@ -22,6 +23,8 @@
     "Limited Edition"
   ];
 
+  // Official reference data controls navigation, dropdowns, filters,
+  // import validation warnings, and category/series ordering throughout the app.
   const categories = [
     "Main Series",
     "Mini Peeks",
@@ -32,6 +35,127 @@
     "Marvel",
     "Star Wars"
   ];
+
+  const seriesByCategory = {
+    "Main Series": [
+      "Series 1",
+      "Series 2",
+      "Series 3",
+      "Series 4",
+      "Series 5",
+      "Series 6",
+      "Series 7",
+      "Series 8",
+      "Series 9",
+      "Series 10",
+      "Series 11 (Technicolor)",
+      "Series 12 (Pixel Perfect)",
+      "Series 13 (Remember When)",
+      "Series 14 (Let's Party)",
+      "Series 15 (In Full Bloom)",
+      "Series 16 (Ticket to Fun)"
+    ],
+    "Mini Peeks": [
+      "Fuzzified",
+      "Gravity Falls",
+      "Muppets Black Light",
+      "Neon Pop",
+      "Nightmare Before Christmas Black Light",
+      "Lilo and Stitch Black Light",
+      "Lilo and Stitch Flocked",
+      "Villains Black Light",
+      "Winnie the Pooh Flocked"
+    ],
+    "Collection Peeks": [
+      "Disney 50th Anniversary",
+      "A Goofy Movie",
+      "Disney Parks",
+      "Encanto",
+      "Gold Peek",
+      "The Haunted Mansion",
+      "Hercules",
+      "The Incredibles",
+      "Inside Out 2",
+      "The Little Mermaid",
+      "Mickey's Christmas Carol",
+      "Mickey's Years of Ears",
+      "Moana 2",
+      "The Muppets",
+      "Nightmare Before Christmas Glow",
+      "Nightmare Before Christmas",
+      "Nightmare Before Christmas 30th Anniversary",
+      "Nightmare Before Christmas Tim Burton's",
+      "Olaf Presents",
+      "Pixar Fest",
+      "Princess Glitter and Gold",
+      "Toy Story Sid's Toy Box",
+      "Snow White",
+      "Lilo and Stitch",
+      "Lilo and Stitch Experiments",
+      "Treasures From The Vault",
+      "Up",
+      "Villains",
+      "Villains 2",
+      "Villains Rivaling Royals",
+      "Wish"
+    ],
+    "Other": [
+      "Academy",
+      "Academy Lockers",
+      "Adoorbs",
+      "Costume Cuties",
+      "Disney Parks Vehicles",
+      "Doorway to Magic",
+      "Let's Go Series 1",
+      "Let's Go Series 2",
+      "Let's Go Exclusive",
+      "Let's Go Vehicles",
+      "Micro Motion",
+      "Movie Moments",
+      "Neon Glow"
+    ],
+    "Sets": [
+      "Celebration of Wonder",
+      "Playsets"
+    ],
+    "Holidays": [
+      "Advent Calendar 2024",
+      "Advent Calendar 2025",
+      "Easter 2022",
+      "Easter 2023",
+      "Easter 2024",
+      "Easter 2025",
+      "Easter 2026",
+      "Halloween 2025",
+      "Valentine's Day 2025",
+      "Valentine's Day 2026"
+    ],
+    "Marvel": [
+      "Marvel Series 1",
+      "Marvel Series 2",
+      "Fantastic 4"
+    ],
+    "Star Wars": [
+      "Star Wars Galaxy Peek Series 1",
+      "Star Wars Galaxy Peek Series 2",
+      "Star Wars Galaxy Peek Series 3",
+      "Star Wars Galaxy Peek Series 4",
+      "Star Wars Galaxy Peek Series 5",
+      "Star Wars Hyper Peeks",
+      "Galactic Cruisers Series 1",
+      "Galactic Cruisers Series 2",
+      "Galactic Cruisers Series 3",
+      "Grogu Moments",
+      "Ewok Village",
+      "Star Wars Episode I",
+      "Star Wars Episode III",
+      "Star Wars Dark Side",
+      "Star Wars Wide Screen Movie Moments",
+      "Star Wars Glow Hologram",
+      "Star Wars Jedi vs. Sith",
+      "Starfighter Showdown"
+    ]
+  };
 
   const masterKeys = ["id", "category", "series", "character", "franchise", "rarity", "imageId"];
   const collectionKeys = [
@@ -135,7 +259,7 @@
     {
       id: "sample-minipeeks-villains-maleficent",
       category: "Mini Peeks",
-      series: "Villains Mini Peek",
+      series: "Villains Black Light",
       character: "Maleficent",
       franchise: "Sleeping Beauty",
       rarity: "Limited Edition",
@@ -144,7 +268,7 @@
     {
       id: "sample-minipeeks-villains-ursula",
       category: "Mini Peeks",
-      series: "Villains Mini Peek",
+      series: "Villains Black Light",
       character: "Ursula",
       franchise: "The Little Mermaid",
       rarity: "Rare",
@@ -153,7 +277,7 @@
     {
       id: "sample-minipeeks-villains-scar",
       category: "Mini Peeks",
-      series: "Villains Mini Peek",
+      series: "Villains Black Light",
       character: "Scar",
       franchise: "The Lion King",
       rarity: "Common",
@@ -162,7 +286,7 @@
     {
       id: "sample-starwars-galaxy-grogu",
       category: "Star Wars",
-      series: "Galaxy Peek",
+      series: "Star Wars Galaxy Peek Series 1",
       character: "Grogu",
       franchise: "The Mandalorian",
       rarity: "Special Edition",
@@ -171,7 +295,7 @@
     {
       id: "sample-starwars-galaxy-vader",
       category: "Star Wars",
-      series: "Galaxy Peek",
+      series: "Star Wars Galaxy Peek Series 1",
       character: "Darth Vader",
       franchise: "Star Wars",
       rarity: "Ultra Rare",
@@ -180,7 +304,7 @@
     {
       id: "sample-marvel-avengers-spiderman",
       category: "Marvel",
-      series: "Avengers Peek",
+      series: "Marvel Series 1",
       character: "Spider-Man",
       franchise: "Marvel",
       rarity: "Rare",
@@ -189,7 +313,7 @@
     {
       id: "sample-marvel-avengers-ironman",
       category: "Marvel",
-      series: "Avengers Peek",
+      series: "Marvel Series 1",
       character: "Iron Man",
       franchise: "Marvel",
       rarity: "Common",
@@ -198,7 +322,7 @@
     {
       id: "sample-holiday-jack-skellington",
       category: "Holidays",
-      series: "Spooky Season",
+      series: "Halloween 2025",
       character: "Jack Skellington",
       franchise: "The Nightmare Before Christmas",
       rarity: "Special Edition",
@@ -536,6 +660,22 @@
     return Number.isInteger(value) && value >= 0;
   }
 
+  function getAllSeries() {
+    return categories.flatMap((category) => seriesByCategory[category] || []);
+  }
+
+  function isKnownCategory(category) {
+    return categories.includes(category);
+  }
+
+  function isKnownSeriesForCategory(category, series) {
+    return Boolean(seriesByCategory[category] && seriesByCategory[category].includes(series));
+  }
+
+  function isKnownSeries(series) {
+    return getAllSeries().includes(series);
+  }
+
   function emptyValidationResult(records) {
     return {
       ok: false,
@@ -547,7 +687,8 @@
           errors: [`Import file must be a JSON array. Received ${Array.isArray(records) ? "array" : typeof records}.`]
         }
       ],
-      orphanRows: []
+      orphanRows: [],
+      warningRows: []
     };
   }
 
@@ -560,11 +701,13 @@
 
     const seenIds = new Set();
     const invalidRows = [];
+    const warningRows = [];
     const normalized = [];
 
     records.forEach((record, index) => {
       const row = index + 1;
       const errors = [];
+      const warnings = [];
 
       if (!isPlainObject(record)) {
         invalidRows.push({ row, id: "", errors: ["Row must be an object."] });
@@ -581,12 +724,18 @@
         errors.push(`Duplicate id in import file: ${record.id}.`);
       }
 
-      if (!categories.includes(record.category)) {
-        errors.push(`category must be one of: ${categories.join(", ")}.`);
+      if (!isNonEmptyString(record.category)) {
+        errors.push("category must be a non-empty string.");
+      } else if (!isKnownCategory(record.category)) {
+        warnings.push(`category "${record.category}" is not in the official reference list.`);
       }
 
       if (!isNonEmptyString(record.series)) {
         errors.push("series must be a non-empty string.");
+      } else if (isKnownCategory(record.category) && !isKnownSeriesForCategory(record.category, record.series)) {
+        warnings.push(`series "${record.series}" is not recognized under category "${record.category}".`);
+      } else if (!isKnownCategory(record.category) && !isKnownSeries(record.series)) {
+        warnings.push(`series "${record.series}" is not in the official reference list.`);
       }
 
       if (!isNonEmptyString(record.character)) {
@@ -612,6 +761,9 @@
       if (errors.length) {
         invalidRows.push({ row, id: String(record.id || ""), errors });
       } else {
+        if (warnings.length) {
+          warningRows.push({ row, id: String(record.id || ""), warnings });
+        }
         normalized.push(normalizeMaster(record));
       }
     });
@@ -620,7 +772,8 @@
       ok: invalidRows.length === 0,
       records: normalized,
       invalidRows,
-      orphanRows: []
+      orphanRows: [],
+      warningRows
     };
   }
 
@@ -633,6 +786,7 @@
     const seenIds = new Set();
     const invalidRows = [];
     const orphanRows = [];
+    const warningRows = [];
     const normalized = [];
 
     records.forEach((record, index) => {
@@ -723,7 +877,8 @@
       ok: invalidRows.length === 0 && orphanRows.length === 0,
       records: normalized,
       invalidRows,
-      orphanRows
+      orphanRows,
+      warningRows
     };
   }
 
@@ -732,7 +887,7 @@
 
     return {
       id: id || makeLocalId(),
-      category: categories.includes(record.category) ? record.category : "Other",
+      category: cleanString(record.category, "Other"),
       series: cleanString(record.series, "Unsorted"),
       character: cleanString(record.character, "Unknown Character"),
       franchise: cleanString(record.franchise, "Unknown Franchise"),
@@ -770,6 +925,16 @@
 
   async function setMeta(key, value) {
     return writeOne(STORES.meta, { key, value });
+  }
+
+  async function getLastBackupDate() {
+    return (await getMeta("lastBackupDate")) || "";
+  }
+
+  async function recordBackupExport(timestamp) {
+    const backupTimestamp = timestamp || new Date().toISOString();
+    await setMeta("lastBackupDate", backupTimestamp);
+    return backupTimestamp;
   }
 
   async function seedIfNeeded() {
@@ -898,6 +1063,10 @@
   window.DoorablesDB = {
     categories,
     rarities,
+    seriesByCategory,
+    getAllSeries,
+    isKnownCategory,
+    isKnownSeriesForCategory,
     init: openDb,
     seedIfNeeded,
     createEmptyCollection,
@@ -914,6 +1083,8 @@
     importCollection,
     exportMaster: () => readAll(STORES.master),
     exportCollection: () => readAll(STORES.collection),
+    getLastBackupDate,
+    recordBackupExport,
     clearAllData,
     getStorageStats,
     logActivity,

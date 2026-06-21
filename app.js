@@ -10,15 +10,18 @@
     search: "",
     collectionFilter: "All",
     inventoryFilter: "All",
+    currentCategory: "",
     currentSeries: "",
     bulkSeries: "",
     master: [],
     collection: [],
     collectionMap: new Map(),
     activity: [],
+    isOnline: navigator.onLine,
     storage: {
       counts: {},
-      estimate: {}
+      estimate: {},
+      lastBackupDate: ""
     },
     dbFilters: {
       category: "",
@@ -74,6 +77,7 @@
       }
 
       state.tab = button.dataset.tab;
+      state.currentCategory = "";
       state.currentSeries = "";
       closeFabMenu();
       render();
@@ -110,14 +114,17 @@
     document.addEventListener("change", handleDocumentChange);
     document.addEventListener("input", handleDocumentInput);
     document.addEventListener("submit", handleDocumentSubmit);
+    window.addEventListener("online", updateOnlineStatus);
+    window.addEventListener("offline", updateOnlineStatus);
   }
 
   async function refreshData() {
-    const [master, collection, activity, counts] = await Promise.all([
+    const [master, collection, activity, counts, lastBackupDate] = await Promise.all([
       db.getAllMaster(),
       db.getAllCollection(),
       db.getRecentActivity(12),
-      db.getStorageStats()
+      db.getStorageStats(),
+      db.getLastBackupDate()
     ]);
 
     state.master = master.sort(compareBy("character"));
@@ -125,12 +132,21 @@
     state.collectionMap = new Map(collection.map((record) => [record.id, record]));
     state.activity = activity;
     state.storage.counts = counts;
+    state.storage.lastBackupDate = lastBackupDate || "";
+    state.isOnline = navigator.onLine;
 
     if (navigator.storage && navigator.storage.estimate) {
       state.storage.estimate = await navigator.storage.estimate();
     }
 
     render();
+  }
+
+  function updateOnlineStatus() {
+    state.isOnline = navigator.onLine;
+    if (state.tab === "settings") {
+      render();
+    }
   }
 
   async function registerServiceWorker() {
@@ -270,7 +286,7 @@
         ${renderFilterRow(["All", "Owned", "Missing", "Duplicates", "For Sale"], state.collectionFilter, "collection-filter")}
       </section>
 
-      ${filtered.length ? Object.keys(grouped).sort().map((category) => renderCategoryGroup(category, grouped[category])).join("") : renderEmpty("No Doorables found", "Try a different search or filter.")}
+      ${filtered.length ? sortCategories(Object.keys(grouped)).map((category) => renderCategoryGroup(category, grouped[category])).join("") : renderEmpty("No Doorables found", "Try a different search or filter.")}
     `;
   }
 
@@ -281,14 +297,14 @@
       <section class="section-band">
         <h2 class="category-heading">${escapeHtml(category)}</h2>
         <div class="category-block">
-          ${Object.keys(seriesGroups).sort().map((series) => {
-            const seriesRecords = getMergedRecords().filter((record) => record.series === series);
+          ${sortSeriesNames(Object.keys(seriesGroups), category).map((series) => {
+            const seriesRecords = getMergedRecords().filter((record) => record.category === category && record.series === series);
             const visibleRecords = seriesGroups[series];
             const stats = getSeriesStats(seriesRecords);
 
             return `
               <div class="series-block">
-                <button class="series-row" type="button" data-open-series="${escapeAttr(series)}">
+                <button class="series-row" type="button" data-open-category="${escapeAttr(category)}" data-open-series="${escapeAttr(series)}">
                   <span class="series-row-top">
                     <span>
                       <h3>${escapeHtml(series)}</h3>
@@ -310,7 +326,9 @@
   }
 
   function renderSeriesDetail() {
-    const seriesRecords = applySearch(getMergedRecords().filter((record) => record.series === state.currentSeries));
+    const seriesRecords = applySearch(getMergedRecords().filter((record) => {
+      return record.series === state.currentSeries && (!state.currentCategory || record.category === state.currentCategory);
+    }));
     const stats = getSeriesStats(seriesRecords);
     const missing = seriesRecords.filter((record) => !record.collectionCopy);
     const collected = seriesRecords.filter((record) => record.collectionCopy);
@@ -413,18 +431,18 @@
 
       <section class="section-band">
         <div class="section-title-row"><h3>Category Completion</h3></div>
-        <div class="list-stack">${renderCompletionRows(categoryGroups)}</div>
+        <div class="list-stack">${renderCompletionRows(categoryGroups, "category")}</div>
       </section>
 
       <section class="section-band">
         <div class="section-title-row"><h3>Series Completion</h3></div>
-        <div class="list-stack">${renderCompletionRows(seriesGroups)}</div>
+        <div class="list-stack">${renderCompletionRows(seriesGroups, "series")}</div>
       </section>
 
       <section class="section-band">
         <div class="section-title-row"><h3>Rarity Breakdown</h3></div>
         <div class="stat-grid">
-          ${Object.keys(rarityGroups).sort().map((rarity) => renderStat(rarity, rarityGroups[rarity].length)).join("")}
+          ${sortByReference(Object.keys(rarityGroups), db.rarities).map((rarity) => renderStat(rarity, rarityGroups[rarity].length)).join("")}
         </div>
       </section>
 
@@ -461,6 +479,17 @@
       </section>
 
       <section class="section-band">
+        <div class="section-title-row"><h3>About / Version</h3></div>
+        <div class="stat-grid">
+          ${renderStat("App Name", "Doorables Vault")}
+          ${renderStat("Version", APP_VERSION)}
+          ${renderStat("Storage Type", "IndexedDB")}
+          ${renderStat("Offline Status", state.isOnline ? "Online" : "Offline")}
+          ${renderStat("Last Backup Date", state.storage.lastBackupDate ? formatDateTime(state.storage.lastBackupDate) : "No backup recorded")}
+        </div>
+      </section>
+
+      <section class="section-band">
         <div class="section-title-row"><h3>Master Database JSON</h3></div>
         <div class="form-actions">
           <button class="primary-button" type="button" data-settings-action="import-master">Import Master Database JSON</button>
@@ -491,7 +520,7 @@
 
       <section class="section-band">
         <div class="section-title-row"><h3>Delete All Local Vault Data</h3></div>
-        <p class="muted small">This permanently deletes the master database, collection data, activity, image blobs, and local settings stored in IndexedDB on this device.</p>
+        <p class="muted small">This permanently deletes the master database, collection data, activity history, images, and settings/meta data stored in IndexedDB on this device.</p>
         <div class="form-actions">
           <button class="danger-button" type="button" data-settings-action="clear-data">Delete All Local Vault Data</button>
         </div>
@@ -500,9 +529,13 @@
   }
 
   function renderDatabaseToolbar() {
-    const categories = uniqueValues(getMergedRecords(), "category");
-    const series = uniqueValues(getMergedRecords(), "series");
-    const franchises = uniqueValues(getMergedRecords(), "franchise");
+    const records = getMergedRecords();
+    const categories = mergeReferenceOptions(db.categories, uniqueValues(records, "category"));
+    const seriesSource = state.dbFilters.category
+      ? records.filter((record) => record.category === state.dbFilters.category)
+      : records;
+    const series = getSeriesOptions(seriesSource, state.dbFilters.category, true);
+    const franchises = uniqueValues(records, "franchise");
 
     return `
       <div class="toolbar-grid">
@@ -515,8 +548,8 @@
           <select class="filter-select" data-db-filter="sort">
             ${[
               ["character", "Character A-Z"],
-              ["series", "Series A-Z"],
-              ["category", "Category A-Z"],
+              ["series", "Series"],
+              ["category", "Category"],
               ["rarity", "Rarity A-Z"],
               ["owned", "Owned quantity"]
             ].map(([value, label]) => `<option value="${value}" ${state.dbFilters.sort === value ? "selected" : ""}>${label}</option>`).join("")}
@@ -538,6 +571,16 @@
     `;
   }
 
+  function renderSeriesDatalist() {
+    const series = mergeReferenceOptions(getAllReferenceSeries(), uniqueValues(getMergedRecords(), "series"));
+
+    return `
+      <datalist id="series-reference-options">
+        ${series.map((name) => `<option value="${escapeAttr(name)}"></option>`).join("")}
+      </datalist>
+    `;
+  }
+
   function renderDoorableCard(record, options = {}) {
     const statusChips = [
       record.collectionCopy ? '<span class="chip is-gold">Collection copy</span>' : '<span class="chip">Missing</span>',
@@ -551,7 +594,7 @@
         ${renderArt(record)}
         <div class="item-main">
           <div class="item-title-row">
-            <div>
+            <div class="item-copy">
               <h3 class="item-title">${escapeHtml(record.character)}</h3>
               <p class="item-meta">${escapeHtml(record.series)} | ${escapeHtml(record.franchise)}</p>
             </div>
@@ -614,8 +657,11 @@
     `;
   }
 
-  function renderCompletionRows(groups) {
-    const rows = Object.keys(groups).sort().map((name) => {
+  function renderCompletionRows(groups, type) {
+    const names = type === "category"
+      ? sortCategories(Object.keys(groups))
+      : sortSeriesNames(Object.keys(groups));
+    const rows = names.map((name) => {
       const stats = getSeriesStats(groups[name]);
       return `
         <div class="plain-row">
@@ -713,6 +759,7 @@
 
     const openSeries = event.target.closest("[data-open-series]");
     if (openSeries) {
+      state.currentCategory = openSeries.dataset.openCategory || "";
       state.currentSeries = openSeries.dataset.openSeries;
       render();
       window.scrollTo({ top: 0, behavior: "smooth" });
@@ -721,6 +768,7 @@
 
     const backToCollection = event.target.closest("[data-action='back-to-collection']");
     if (backToCollection) {
+      state.currentCategory = "";
       state.currentSeries = "";
       render();
       return;
@@ -766,6 +814,16 @@
     const dbFilter = event.target.closest("[data-db-filter]");
     if (dbFilter) {
       state.dbFilters[dbFilter.dataset.dbFilter] = dbFilter.value;
+      if (dbFilter.dataset.dbFilter === "category") {
+        const validSeries = getSeriesOptions(
+          getMergedRecords().filter((record) => !dbFilter.value || record.category === dbFilter.value),
+          dbFilter.value,
+          true
+        );
+        if (state.dbFilters.series && !validSeries.includes(state.dbFilters.series)) {
+          state.dbFilters.series = "";
+        }
+      }
       render();
       return;
     }
@@ -865,7 +923,7 @@
       await exportJson("doorables-collection.json", await db.exportCollection());
     } else if (action === "clear-data") {
       const confirmation = window.prompt(
-        "Delete All Local Vault Data\n\nThis permanently deletes the master database, collection data, activity, images, and local settings from IndexedDB on this device.\n\nType DELETE to continue."
+        "Delete All Local Vault Data\n\nThis permanently deletes these IndexedDB records on this device:\n\n- master database\n- collection data\n- activity history\n- images\n- settings/meta data\n\nExport a backup first if you need to keep anything.\n\nType DELETE to continue."
       );
       if (confirmation === "DELETE") {
         await db.clearAllData();
@@ -889,6 +947,11 @@
       const validation = validateImportPayload(type, json);
       if (!validation.ok) {
         showImportValidationReport(type, validation);
+        return;
+      }
+
+      if (validation.warningRows.length && !confirmImportWarnings(type, validation)) {
+        showToast("Import canceled.");
         return;
       }
 
@@ -940,7 +1003,41 @@
       }
     }
 
+    if (validation.warningRows.length) {
+      lines.push("", "Reference warnings:");
+      validation.warningRows.slice(0, 15).forEach((issue) => {
+        const rowLabel = `Row ${issue.row}${issue.id ? ` (${issue.id})` : ""}`;
+        lines.push(`${rowLabel}: ${issue.warnings.join(" ")}`);
+      });
+      if (validation.warningRows.length > 15) {
+        lines.push(`...and ${validation.warningRows.length - 15} more warning rows.`);
+      }
+    }
+
     window.alert(lines.join("\n"));
+  }
+
+  function confirmImportWarnings(type, validation) {
+    const label = type === "master" ? "Master database" : "Collection";
+    const lines = [
+      `${label} import has ${validation.warningRows.length} reference warning${validation.warningRows.length === 1 ? "" : "s"}.`,
+      "These rows use categories or series that are not in the official reference list.",
+      "You can still import them, and they will appear after official values in filters and groups.",
+      "",
+      "Warnings:"
+    ];
+
+    validation.warningRows.slice(0, 20).forEach((issue) => {
+      const rowLabel = `Row ${issue.row}${issue.id ? ` (${issue.id})` : ""}`;
+      lines.push(`${rowLabel}: ${issue.warnings.join(" ")}`);
+    });
+
+    if (validation.warningRows.length > 20) {
+      lines.push(`...and ${validation.warningRows.length - 20} more warning rows.`);
+    }
+
+    lines.push("", "Continue to import mode selection?");
+    return window.confirm(lines.join("\n"));
   }
 
   function askImportMode(type, records) {
@@ -955,14 +1052,18 @@
       ? state.collection.filter((record) => !incomingIds.has(record.id)).length
       : 0;
     const masterReplaceWarning = type === "master"
-      ? `\nReplacing the master database may hide ${hiddenCollectionCount} existing collection record${hiddenCollectionCount === 1 ? "" : "s"} whose ids are not in the imported master file.\n`
+      ? `\nReplace master warning: replacing the master database can affect collection visibility and series/category reporting. It may hide ${hiddenCollectionCount} existing collection record${hiddenCollectionCount === 1 ? "" : "s"} whose ids are not in the imported master file.\n`
+      : "";
+    const collectionReplaceWarning = type === "collection"
+      ? "\nReplace collection warning: replacing collection data will overwrite existing ownership, inventory, listing status, notes, dates, and collection copy flags.\n"
       : "";
 
     const choice = window.prompt(
       `Import ${records.length} ${label} record${records.length === 1 ? "" : "s"}.\n\n` +
-      `Merge: keeps existing data, but overwrites ${overlapCount} matching id${overlapCount === 1 ? "" : "s"}.\n` +
-      `Replace: deletes ${existingCount} existing ${label} record${existingCount === 1 ? "" : "s"} before importing.\n` +
+      `MERGE: adds new records and updates ${overlapCount} matching id${overlapCount === 1 ? "" : "s"}. It does not delete existing records that are not in the import file.\n` +
+      `REPLACE: deletes ${existingCount} existing ${label} record${existingCount === 1 ? "" : "s"} before importing this file.\n` +
       masterReplaceWarning +
+      collectionReplaceWarning +
       "Cancel: imports nothing.\n\nType MERGE, REPLACE, or CANCEL."
     );
 
@@ -976,7 +1077,7 @@
     }
 
     if (normalized === "REPLACE") {
-      return "replace";
+      return confirmReplaceImport(type, records, { existingCount, hiddenCollectionCount }) ? "replace" : "";
     }
 
     if (normalized !== "CANCEL") {
@@ -984,6 +1085,35 @@
     }
 
     return "";
+  }
+
+  function confirmReplaceImport(type, records, details) {
+    const label = type === "master" ? "Master Database" : "Collection Data";
+    const warning = type === "master"
+      ? [
+          `This will delete ${details.existingCount} existing master database record${details.existingCount === 1 ? "" : "s"} before importing ${records.length} replacement record${records.length === 1 ? "" : "s"}.`,
+          "Replacing the master database can affect collection visibility because collection rows only appear when their IDs exist in the master database.",
+          "It can also change category/series reporting, filters, Smart Bulk Mode series choices, and analytics grouping.",
+          `Current collection records that may be hidden after replacement: ${details.hiddenCollectionCount}.`
+        ]
+      : [
+          `This will delete ${details.existingCount} existing collection record${details.existingCount === 1 ? "" : "s"} before importing ${records.length} replacement record${records.length === 1 ? "" : "s"}.`,
+          "Existing ownership quantities, inventory counts, listing status, notes, dates, and collection copy flags will be replaced by the import file."
+        ];
+
+    const confirmation = window.prompt(
+      `Replace ${label}\n\n${warning.join("\n\n")}\n\nThis cannot be undone from inside the app unless you have an exported backup.\n\nType REPLACE to continue.`
+    );
+
+    if (confirmation === "REPLACE") {
+      return true;
+    }
+
+    if (confirmation !== null) {
+      showToast("Replace canceled. Type REPLACE exactly to confirm.");
+    }
+
+    return false;
   }
 
   function pickJsonFile() {
@@ -996,7 +1126,7 @@
     });
   }
 
-  function exportJson(filename, data) {
+  async function exportJson(filename, data) {
     const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
     const url = URL.createObjectURL(blob);
     const anchor = document.createElement("a");
@@ -1006,6 +1136,11 @@
     anchor.click();
     anchor.remove();
     URL.revokeObjectURL(url);
+    state.storage.lastBackupDate = await db.recordBackupExport();
+    state.storage.counts = await db.getStorageStats();
+    if (state.tab === "settings") {
+      render();
+    }
     showToast(`Exported ${filename}.`);
   }
 
@@ -1190,7 +1325,7 @@
           ${renderDoorableCard(record, { controls: false, database: true })}
         </div>
         ${renderMasterInput(record, "character", "Character")}
-        ${renderMasterInput(record, "series", "Series")}
+        ${renderMasterInput(record, "series", "Series", { list: "series-reference-options" })}
         ${renderMasterSelect(record, "category", "Category", db.categories)}
         ${renderMasterInput(record, "franchise", "Franchise")}
         ${renderMasterSelect(record, "rarity", "Rarity", db.rarities)}
@@ -1223,25 +1358,28 @@
           <p class="muted small">Date added: ${escapeHtml(record.dateAdded || "Not set")}</p>
           <p class="muted small">Last modified: ${formatDateTime(record.lastModified) || "Not set"}</p>
         </div>
+        ${renderSeriesDatalist()}
       </div>
     `;
   }
 
-  function renderMasterInput(record, key, label) {
+  function renderMasterInput(record, key, label, options = {}) {
+    const listAttr = options.list ? ` list="${escapeAttr(options.list)}"` : "";
     return `
       <label class="field">
         <span>${label}</span>
-        <input type="text" value="${escapeAttr(record[key])}" data-record-id="${escapeAttr(record.id)}" data-master-field="${key}" data-autosave-input="${escapeAttr(record.id)}">
+        <input type="text" value="${escapeAttr(record[key])}"${listAttr} data-record-id="${escapeAttr(record.id)}" data-master-field="${key}" data-autosave-input="${escapeAttr(record.id)}">
       </label>
     `;
   }
 
   function renderMasterSelect(record, key, label, options) {
+    const selectOptions = withCurrentOption(options, record[key]);
     return `
       <label class="field">
         <span>${label}</span>
         <select data-record-id="${escapeAttr(record.id)}" data-master-field="${key}">
-          ${options.map((option) => `<option value="${escapeAttr(option)}" ${record[key] === option ? "selected" : ""}>${escapeHtml(option)}</option>`).join("")}
+          ${selectOptions.map((option) => `<option value="${escapeAttr(option)}" ${record[key] === option ? "selected" : ""}>${escapeHtml(option)}</option>`).join("")}
         </select>
       </label>
     `;
@@ -1259,15 +1397,17 @@
   // Smart Bulk Mode uses the same adjustOwned path as cards so every plus/minus
   // click auto-saves, triggers first-copy collection prompts, and respects rules.
   function openBulkModal() {
-    const series = uniqueValues(getMergedRecords(), "series");
-    state.bulkSeries = state.bulkSeries || series[0] || "";
+    const series = getSeriesOptions(getMergedRecords());
+    if (!series.includes(state.bulkSeries)) {
+      state.bulkSeries = series[0] || "";
+    }
     elements.modalTitle.textContent = "Smart Bulk Mode";
     elements.modal.hidden = false;
     renderBulkModal();
   }
 
   function renderBulkModal() {
-    const series = uniqueValues(getMergedRecords(), "series");
+    const series = getSeriesOptions(getMergedRecords());
     const records = getMergedRecords()
       .filter((record) => record.series === state.bulkSeries)
       .sort(compareBy("character"));
@@ -1281,22 +1421,20 @@
           </select>
         </label>
       </div>
-      <div class="card-grid">
+      <div class="card-grid bulk-grid">
         ${records.map((record) => `
-          <article class="doorable-card">
+          <article class="doorable-card bulk-card">
             ${renderArt(record)}
-            <div class="item-main">
-              <div class="item-title-row">
-                <div>
+            <div class="item-main bulk-item-body">
+                <div class="bulk-copy">
                   <h3 class="item-title">${escapeHtml(record.character)}</h3>
                   <p class="item-meta">${escapeHtml(record.rarity)} | Current quantity ${record.owned}</p>
                 </div>
-                <span class="qty-control">
+                <span class="qty-control bulk-qty-control">
                   <button type="button" data-bulk-dec="${escapeAttr(record.id)}" aria-label="Decrease ${escapeAttr(record.character)}">-</button>
                   <span>${record.owned}</span>
                   <button type="button" data-bulk-inc="${escapeAttr(record.id)}" aria-label="Increase ${escapeAttr(record.character)}">+</button>
                 </span>
-              </div>
             </div>
           </article>
         `).join("") || renderEmpty("No records in this series", "Import or add master database records first.")}
@@ -1322,7 +1460,7 @@
         </label>
         <label class="field">
           <span>Series</span>
-          <input name="series" type="text" required>
+          <input name="series" type="text" list="series-reference-options" required>
         </label>
         <label class="field">
           <span>Franchise</span>
@@ -1356,6 +1494,7 @@
           <button class="primary-button" type="submit">Add Doorable</button>
           <button class="secondary-button" type="button" data-close-modal>Cancel</button>
         </div>
+        ${renderSeriesDatalist()}
       </form>
     `;
     elements.modal.hidden = false;
@@ -1495,7 +1634,90 @@
       return records.sort((a, b) => b.owned - a.owned || a.character.localeCompare(b.character));
     }
 
+    if (state.dbFilters.sort === "category") {
+      return records.sort((a, b) => compareValuesByReference(a.category, b.category, db.categories) || compareBy("character")(a, b));
+    }
+
+    if (state.dbFilters.sort === "series") {
+      return records.sort((a, b) => compareValuesByReference(a.series, b.series, getAllReferenceSeries()) || compareBy("character")(a, b));
+    }
+
+    if (state.dbFilters.sort === "rarity") {
+      return records.sort((a, b) => compareValuesByReference(a.rarity, b.rarity, db.rarities) || compareBy("character")(a, b));
+    }
+
     return records.sort(compareBy(state.dbFilters.sort));
+  }
+
+  // Reference-aware ordering keeps official categories and series in a stable
+  // collector-friendly order, while still allowing future imported values.
+  function getAllReferenceSeries() {
+    return typeof db.getAllSeries === "function"
+      ? db.getAllSeries()
+      : Object.values(db.seriesByCategory || {}).flat();
+  }
+
+  function getSeriesOptions(records, category = "", includeReference = false) {
+    const existing = uniqueValues(records, "series");
+    const hasKnownCategory = Boolean(category && db.seriesByCategory[category]);
+    const reference = hasKnownCategory ? db.seriesByCategory[category] : getAllReferenceSeries();
+
+    if (includeReference && (!category || hasKnownCategory)) {
+      return mergeReferenceOptions(reference, existing);
+    }
+
+    return sortByReference(existing, reference);
+  }
+
+  function sortCategories(values) {
+    return sortByReference(values, db.categories);
+  }
+
+  function sortSeriesNames(values, category = "") {
+    const reference = category && db.seriesByCategory[category]
+      ? db.seriesByCategory[category]
+      : getAllReferenceSeries();
+    return sortByReference(values, reference);
+  }
+
+  function sortByReference(values, referenceItems) {
+    return [...new Set(values.filter(Boolean))].sort((a, b) => compareValuesByReference(a, b, referenceItems));
+  }
+
+  function mergeReferenceOptions(referenceItems, existingItems) {
+    const reference = [...new Set(referenceItems.filter(Boolean))];
+    const referenceSet = new Set(reference);
+    const unknown = [...new Set(existingItems.filter(Boolean))]
+      .filter((value) => !referenceSet.has(value))
+      .sort();
+
+    return [...reference, ...unknown];
+  }
+
+  function withCurrentOption(options, currentValue) {
+    return mergeReferenceOptions(options, currentValue ? [currentValue] : []);
+  }
+
+  function compareValuesByReference(a, b, referenceItems) {
+    const referenceIndex = new Map(referenceItems.map((value, index) => [value, index]));
+    const aValue = String(a || "");
+    const bValue = String(b || "");
+    const aKnown = referenceIndex.has(aValue);
+    const bKnown = referenceIndex.has(bValue);
+
+    if (aKnown && bKnown) {
+      return referenceIndex.get(aValue) - referenceIndex.get(bValue);
+    }
+
+    if (aKnown) {
+      return -1;
+    }
+
+    if (bKnown) {
+      return 1;
+    }
+
+    return aValue.localeCompare(bValue);
   }
 
   function groupBy(records, key) {
