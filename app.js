@@ -490,9 +490,10 @@
       </section>
 
       <section class="section-band">
-        <div class="section-title-row"><h3>Master Database JSON</h3></div>
+        <div class="section-title-row"><h3>Master Database Import / Export</h3></div>
         <div class="form-actions">
           <button class="primary-button" type="button" data-settings-action="import-master">Import Master Database JSON</button>
+          <button class="primary-button" type="button" data-settings-action="import-master-csv">Import Master Database CSV</button>
           <button class="secondary-button" type="button" data-settings-action="export-master">Export Master Database JSON</button>
         </div>
       </section>
@@ -915,6 +916,8 @@
   async function handleSettingsAction(action) {
     if (action === "import-master") {
       await pickAndImport("master");
+    } else if (action === "import-master-csv") {
+      await pickAndImportMasterCsv();
     } else if (action === "export-master") {
       await exportJson("doorables-master-database.json", await db.exportMaster());
     } else if (action === "import-collection") {
@@ -969,6 +972,63 @@
     }
   }
 
+  async function pickAndImportMasterCsv() {
+    try {
+      const file = await pickCsvFile();
+      if (!file) {
+        return;
+      }
+
+      const parsed = parseMasterCsv(await file.text());
+      const validation = db.validateMasterRecords(parsed.records);
+      const totalRows = parsed.totalRows;
+      const validRows = validation.records.length;
+      const invalidRows = countInvalidCsvRows(parsed, validation);
+
+      if (parsed.invalidRows.length || !validation.ok) {
+        showCsvImportReport({ totalRows, validRows, invalidRows, parsed, validation });
+        return;
+      }
+
+      if (!confirmCsvImportSummary({ totalRows, validRows, invalidRows })) {
+        showToast("CSV import canceled.");
+        return;
+      }
+
+      if (validation.warningRows.length && !confirmImportWarnings("master", validation)) {
+        showToast("CSV import canceled.");
+        return;
+      }
+
+      const mode = askImportMode("master", validation.records);
+      if (!mode) {
+        showToast("CSV import canceled.");
+        return;
+      }
+
+      const count = await db.importMaster(validation.records, mode);
+      await refreshData();
+      showToast(`${mode === "replace" ? "Replaced" : "Merged"} ${count} master record${count === 1 ? "" : "s"} from CSV.`);
+    } catch (error) {
+      showToast(error.message || "CSV import failed. Check that the file is valid CSV.");
+    }
+  }
+
+  function countInvalidCsvRows(parsed, validation) {
+    const invalidDataRows = new Set();
+    let fileLevelIssues = 0;
+
+    [...parsed.invalidRows, ...validation.invalidRows].forEach((issue) => {
+      if (issue.row > 1) {
+        invalidDataRows.add(issue.row);
+      } else {
+        fileLevelIssues += 1;
+      }
+    });
+
+    return invalidDataRows.size + fileLevelIssues;
+  }
+
   // Import/export validation is previewed in the UI before db.js writes anything.
   function validateImportPayload(type, json) {
     if (type === "master") {
@@ -1015,6 +1075,49 @@
     }
 
     window.alert(lines.join("\n"));
+  }
+
+  function showCsvImportReport(summary) {
+    const lines = [
+      "Master database CSV import canceled. Fix invalid rows before importing.",
+      "",
+      `Total rows: ${summary.totalRows}`,
+      `Valid rows: ${summary.validRows}`,
+      `Invalid rows: ${summary.invalidRows}`
+    ];
+
+    if (summary.parsed.invalidRows.length) {
+      lines.push("", "CSV format issues:");
+      summary.parsed.invalidRows.slice(0, 15).forEach((issue) => {
+        lines.push(`Row ${issue.row}: ${issue.errors.join(" ")}`);
+      });
+      if (summary.parsed.invalidRows.length > 15) {
+        lines.push(`...and ${summary.parsed.invalidRows.length - 15} more CSV format issues.`);
+      }
+    }
+
+    if (summary.validation.invalidRows.length) {
+      lines.push("", "Validation issues:");
+      summary.validation.invalidRows.slice(0, 15).forEach((issue) => {
+        const rowLabel = `Row ${issue.row}${issue.id ? ` (${issue.id})` : ""}`;
+        lines.push(`${rowLabel}: ${issue.errors.join(" ")}`);
+      });
+      if (summary.validation.invalidRows.length > 15) {
+        lines.push(`...and ${summary.validation.invalidRows.length - 15} more validation issues.`);
+      }
+    }
+
+    window.alert(lines.join("\n"));
+  }
+
+  function confirmCsvImportSummary(summary) {
+    return window.confirm(
+      "Master database CSV ready to import.\n\n" +
+      `Total rows: ${summary.totalRows}\n` +
+      `Valid rows: ${summary.validRows}\n` +
+      `Invalid rows: ${summary.invalidRows}\n\n` +
+      "Continue to merge/replace selection?"
+    );
   }
 
   function confirmImportWarnings(type, validation) {
@@ -1124,6 +1227,135 @@
       input.addEventListener("change", () => resolve(input.files[0]));
       input.click();
     });
+  }
+
+  function pickCsvFile() {
+    return new Promise((resolve) => {
+      const input = document.createElement("input");
+      input.type = "file";
+      input.accept = "text/csv,.csv";
+      input.addEventListener("change", () => resolve(input.files[0]));
+      input.click();
+    });
+  }
+
+  // CSV import is intentionally narrow: it accepts only the master database
+  // columns in the documented order, then reuses the JSON master validator.
+  function parseMasterCsv(text) {
+    const expectedHeader = ["id", "category", "series", "character", "franchise", "rarity", "imageId"];
+    const parsedCsv = parseCsvRows(text);
+    const rows = parsedCsv.rows;
+    const records = [];
+    const invalidRows = [...parsedCsv.invalidRows];
+    let totalRows = 0;
+
+    if (!rows.length) {
+      return {
+        totalRows,
+        records,
+        invalidRows: [
+          {
+            row: 1,
+            errors: [`CSV file must include a header row: ${expectedHeader.join(",")}.`]
+          }
+        ]
+      };
+    }
+
+    const header = rows[0].map((value, index) => index === 0 ? value.replace(/^\uFEFF/, "").trim() : value.trim());
+    const headerMatches = header.length === expectedHeader.length &&
+      expectedHeader.every((key, index) => header[index] === key);
+
+    if (!headerMatches) {
+      invalidRows.push({
+        row: 1,
+        errors: [`Header must be exactly: ${expectedHeader.join(",")}.`]
+      });
+      totalRows = rows.slice(1).filter((row) => !(row.length === 1 && row[0].trim() === "")).length;
+      return { totalRows, records, invalidRows };
+    }
+
+    rows.slice(1).forEach((row, index) => {
+      const rowNumber = index + 2;
+      if (row.length === 1 && row[0].trim() === "") {
+        return;
+      }
+
+      totalRows += 1;
+
+      if (row.length !== expectedHeader.length) {
+        invalidRows.push({
+          row: rowNumber,
+          errors: [`Expected ${expectedHeader.length} columns but found ${row.length}.`]
+        });
+        return;
+      }
+
+      records.push(expectedHeader.reduce((record, key, columnIndex) => {
+        record[key] = row[columnIndex].trim();
+        return record;
+      }, {}));
+    });
+
+    if (!records.length && !invalidRows.length) {
+      invalidRows.push({
+        row: 1,
+        errors: ["CSV file must include at least one data row."]
+      });
+    }
+
+    return { totalRows, records, invalidRows };
+  }
+
+  function parseCsvRows(text) {
+    const rows = [];
+    const invalidRows = [];
+    let row = [];
+    let field = "";
+    let inQuotes = false;
+    let currentRowNumber = 1;
+
+    for (let index = 0; index < text.length; index += 1) {
+      const char = text[index];
+      const nextChar = text[index + 1];
+
+      if (char === "\"") {
+        if (inQuotes && nextChar === "\"") {
+          field += "\"";
+          index += 1;
+        } else {
+          inQuotes = !inQuotes;
+        }
+      } else if (char === "," && !inQuotes) {
+        row.push(field);
+        field = "";
+      } else if ((char === "\n" || char === "\r") && !inQuotes) {
+        if (char === "\r" && nextChar === "\n") {
+          index += 1;
+        }
+        row.push(field);
+        rows.push(row);
+        row = [];
+        field = "";
+        currentRowNumber += 1;
+      } else {
+        field += char;
+      }
+    }
+
+    if (inQuotes) {
+      invalidRows.push({
+        row: currentRowNumber,
+        errors: ["Quoted field is not closed."]
+      });
+    }
+
+    if (field.length || row.length) {
+      row.push(field);
+      rows.push(row);
+    }
+
+    return { rows, invalidRows };
   }
 
   async function exportJson(filename, data) {

@@ -117,6 +117,14 @@ Copying the app folder is useful for moving or hosting the app, but it does not 
 
 Use the Settings tab to import or export JSON.
 
+Master database imports support JSON and CSV. CSV files must use this exact header row and column order:
+
+```csv
+id,category,series,character,franchise,rarity,imageId
+```
+
+Each CSV row is converted into a master database record and validated before import. The app shows total rows, valid rows, and invalid rows before allowing merge or replace. Invalid CSV rows must be fixed before importing.
+
 Master database record shape:
 
 ```json
