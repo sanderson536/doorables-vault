@@ -20,7 +20,10 @@
     "Rare",
     "Ultra Rare",
     "Special Edition",
-    "Limited Edition"
+    "Limited Edition",
+    "Exclusive",
+    "Bonus",
+    "Not Applicable"
   ];
 
   // Official reference data controls navigation, dropdowns, filters,
@@ -58,7 +61,7 @@
     "Mini Peeks": [
       "Fuzzified",
       "Gravity Falls",
-      "Muppets Black Light",
+      "The Muppets Black Light",
       "Neon Pop",
       "Nightmare Before Christmas Black Light",
       "Lilo and Stitch Black Light",
@@ -67,7 +70,7 @@
       "Winnie the Pooh Flocked"
     ],
     "Collection Peeks": [
-      "Disney 50th Anniversary",
+      "WDW 50th",
       "A Goofy Movie",
       "Disney Parks",
       "Encanto",
@@ -84,7 +87,7 @@
       "Nightmare Before Christmas Glow",
       "Nightmare Before Christmas",
       "Nightmare Before Christmas 30th Anniversary",
-      "Nightmare Before Christmas Tim Burton's",
+      "Nightmare Before Christmas Tim Burton",
       "Olaf Presents",
       "Pixar Fest",
       "Princess Glitter and Gold",
@@ -103,15 +106,19 @@
       "Academy",
       "Academy Lockers",
       "Adoorbs",
-      "Costume Cuties",
+      "Costume Cuties Series 1",
       "Disney Parks Vehicles",
       "Doorway to Magic",
       "Let's Go Series 1",
       "Let's Go Series 2",
       "Let's Go Exclusive",
-      "Let's Go Vehicles",
+      "Let's Go Vehicles Series 1",
+      "Let's Go Vehicles Series 2",
+      "Let's Go Vehicles Series 3",
       "Micro Motion",
-      "Movie Moments",
+      "Movie Moments Series 1",
+      "Movie Moments Series 2",
+      "Movie Moments Series 3",
       "Neon Glow"
     ],
     "Sets": [
@@ -121,6 +128,7 @@
     "Holidays": [
       "Advent Calendar 2024",
       "Advent Calendar 2025",
+      "Nightmare Before Christmas Advent Calendar 2025",
       "Easter 2022",
       "Easter 2023",
       "Easter 2024",
@@ -141,17 +149,17 @@
       "Star Wars Galaxy Peek Series 3",
       "Star Wars Galaxy Peek Series 4",
       "Star Wars Galaxy Peek Series 5",
-      "Star Wars Hyper Peeks",
-      "Galactic Cruisers Series 1",
-      "Galactic Cruisers Series 2",
-      "Galactic Cruisers Series 3",
+      "Star Wars Hyper Peek",
+      "Star Wars Galactic Cruisers Series 1",
+      "Star Wars Galactic Cruisers Series 2",
+      "Star Wars Galactic Cruisers Series 3",
       "Grogu Moments",
       "Ewok Village",
       "Star Wars Episode I",
       "Star Wars Episode III",
       "Star Wars Dark Side",
       "Star Wars Wide Screen Movie Moments",
-      "Star Wars Glow Hologram",
+      "Star Wars Holograms",
       "Star Wars Jedi vs. Sith",
       "Starfighter Showdown"
     ]

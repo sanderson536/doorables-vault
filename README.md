@@ -125,6 +125,17 @@ id,category,series,character,franchise,rarity,imageId
 
 Each CSV row is converted into a master database record and validated before import. The app shows total rows, valid rows, and invalid rows before allowing merge or replace. Invalid CSV rows must be fixed before importing.
 
+Official rarity values are:
+
+- Common
+- Rare
+- Ultra Rare
+- Special Edition
+- Limited Edition
+- Exclusive
+- Bonus
+- Not Applicable
+
 Master database record shape:
 
 ```json

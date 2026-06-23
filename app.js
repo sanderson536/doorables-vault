@@ -28,7 +28,7 @@
       series: "",
       franchise: "",
       rarity: "",
-      sort: "character"
+      sort: "seriesFranchiseCharacter"
     }
   };
 
@@ -127,7 +127,7 @@
       db.getLastBackupDate()
     ]);
 
-    state.master = master.sort(compareBy("character"));
+    state.master = master.sort(compareSeriesFranchiseCharacter);
     state.collection = collection;
     state.collectionMap = new Map(collection.map((record) => [record.id, record]));
     state.activity = activity;
@@ -299,7 +299,7 @@
         <div class="category-block">
           ${sortSeriesNames(Object.keys(seriesGroups), category).map((series) => {
             const seriesRecords = getMergedRecords().filter((record) => record.category === category && record.series === series);
-            const visibleRecords = seriesGroups[series];
+            const visibleRecords = sortRecordsWithinSeries(seriesGroups[series]);
             const stats = getSeriesStats(seriesRecords);
 
             return `
@@ -328,7 +328,7 @@
   function renderSeriesDetail() {
     const seriesRecords = applySearch(getMergedRecords().filter((record) => {
       return record.series === state.currentSeries && (!state.currentCategory || record.category === state.currentCategory);
-    }));
+    })).sort(compareFranchiseCharacter);
     const stats = getSeriesStats(seriesRecords);
     const missing = seriesRecords.filter((record) => !record.collectionCopy);
     const collected = seriesRecords.filter((record) => record.collectionCopy);
@@ -354,20 +354,21 @@
   }
 
   function renderSeriesSection(title, records) {
+    const sortedRecords = sortRecordsWithinSeries(records);
     return `
       <section class="section-band">
         <div class="section-title-row">
           <h3>${title}</h3>
-          <span class="muted small">${records.length} item${records.length === 1 ? "" : "s"}</span>
+          <span class="muted small">${sortedRecords.length} item${sortedRecords.length === 1 ? "" : "s"}</span>
         </div>
-        ${records.length ? `<div class="card-grid">${records.map((record) => renderDoorableCard(record, { controls: true })).join("")}</div>` : renderEmpty("Nothing here", "This section is clear.")}
+        ${sortedRecords.length ? `<div class="card-grid">${sortedRecords.map((record) => renderDoorableCard(record, { controls: true })).join("")}</div>` : renderEmpty("Nothing here", "This section is clear.")}
       </section>
     `;
   }
 
   function renderInventory() {
     const filtered = filterInventoryRecords(applySearch(getMergedRecords()))
-      .sort((a, b) => b.available - a.available || b.owned - a.owned || a.character.localeCompare(b.character));
+      .sort(compareSeriesFranchiseCharacter);
 
     return `
       <section class="section-band">
@@ -548,6 +549,7 @@
           <span>Sort</span>
           <select class="filter-select" data-db-filter="sort">
             ${[
+              ["seriesFranchiseCharacter", "Series → Franchise → Character"],
               ["character", "Character A-Z"],
               ["series", "Series"],
               ["category", "Category"],
@@ -1642,7 +1644,7 @@
     const series = getSeriesOptions(getMergedRecords());
     const records = getMergedRecords()
       .filter((record) => record.series === state.bulkSeries)
-      .sort(compareBy("character"));
+      .sort(compareFranchiseCharacter);
 
     elements.modalBody.innerHTML = `
       <div class="form-grid">
@@ -1862,23 +1864,42 @@
   }
 
   function sortDatabaseRecords(records) {
+    if (state.dbFilters.sort === "seriesFranchiseCharacter") {
+      return records.sort(compareSeriesFranchiseCharacter);
+    }
+
     if (state.dbFilters.sort === "owned") {
-      return records.sort((a, b) => b.owned - a.owned || a.character.localeCompare(b.character));
+      return records.sort((a, b) => b.owned - a.owned || compareSeriesFranchiseCharacter(a, b));
     }
 
     if (state.dbFilters.sort === "category") {
-      return records.sort((a, b) => compareValuesByReference(a.category, b.category, db.categories) || compareBy("character")(a, b));
+      return records.sort((a, b) => compareValuesByReference(a.category, b.category, db.categories) || compareSeriesFranchiseCharacter(a, b));
     }
 
     if (state.dbFilters.sort === "series") {
-      return records.sort((a, b) => compareValuesByReference(a.series, b.series, getAllReferenceSeries()) || compareBy("character")(a, b));
+      return records.sort((a, b) => compareValuesByReference(a.series, b.series, getAllReferenceSeries()) || compareFranchiseCharacter(a, b));
     }
 
     if (state.dbFilters.sort === "rarity") {
-      return records.sort((a, b) => compareValuesByReference(a.rarity, b.rarity, db.rarities) || compareBy("character")(a, b));
+      return records.sort((a, b) => compareValuesByReference(a.rarity, b.rarity, db.rarities) || compareSeriesFranchiseCharacter(a, b));
     }
 
     return records.sort(compareBy(state.dbFilters.sort));
+  }
+
+  function sortRecordsWithinSeries(records) {
+    return [...records].sort(compareFranchiseCharacter);
+  }
+
+  function compareSeriesFranchiseCharacter(a, b) {
+    return compareValuesByReference(a.series, b.series, getAllReferenceSeries()) ||
+      compareFranchiseCharacter(a, b);
+  }
+
+  function compareFranchiseCharacter(a, b) {
+    return compareText(a.franchise, b.franchise) ||
+      compareText(a.character, b.character) ||
+      compareText(a.id, b.id);
   }
 
   // Reference-aware ordering keeps official categories and series in a stable
@@ -1934,6 +1955,21 @@
     const referenceIndex = new Map(referenceItems.map((value, index) => [value, index]));
     const aValue = String(a || "");
     const bValue = String(b || "");
+    const aBlank = !aValue.trim();
+    const bBlank = !bValue.trim();
+
+    if (aBlank && bBlank) {
+      return 0;
+    }
+
+    if (aBlank) {
+      return 1;
+    }
+
+    if (bBlank) {
+      return -1;
+    }
+
     const aKnown = referenceIndex.has(aValue);
     const bKnown = referenceIndex.has(bValue);
 
@@ -1949,7 +1985,7 @@
       return 1;
     }
 
-    return aValue.localeCompare(bValue);
+    return compareText(aValue, bValue);
   }
 
   function groupBy(records, key) {
@@ -1966,7 +2002,31 @@
   }
 
   function compareBy(key) {
-    return (a, b) => String(a[key] || "").localeCompare(String(b[key] || ""));
+    return (a, b) => compareText(a[key], b[key]);
+  }
+
+  function compareText(a, b) {
+    const aValue = String(a || "").trim();
+    const bValue = String(b || "").trim();
+    const aBlank = !aValue;
+    const bBlank = !bValue;
+
+    if (aBlank && bBlank) {
+      return 0;
+    }
+
+    if (aBlank) {
+      return 1;
+    }
+
+    if (bBlank) {
+      return -1;
+    }
+
+    return aValue.localeCompare(bValue, undefined, {
+      sensitivity: "base",
+      numeric: true
+    });
   }
 
   function sum(records, key) {
