@@ -508,7 +508,7 @@
       request.onupgradeneeded = () => {
         const db = request.result;
 
-        // The first version creates all object stores used by v1.0.
+        // The first schema version creates all object stores used by the app.
         // Future migrations should only change this block inside version upgrades.
         if (!db.objectStoreNames.contains(STORES.master)) {
           const master = db.createObjectStore(STORES.master, { keyPath: "id" });
@@ -1047,9 +1047,15 @@
   }
 
   async function saveImageBlob(imageId, blob) {
+    if (!imageId || !(blob instanceof Blob)) {
+      throw new Error("Images must be saved with an imageId and a valid Blob.");
+    }
+
     return writeOne(STORES.images, {
       imageId,
       blob,
+      mimeType: blob.type || "application/octet-stream",
+      size: blob.size || 0,
       lastModified: new Date().toISOString()
     });
   }
@@ -1091,6 +1097,7 @@
     importCollection,
     exportMaster: () => readAll(STORES.master),
     exportCollection: () => readAll(STORES.collection),
+    getAllImages: () => readAll(STORES.images),
     getLastBackupDate,
     recordBackupExport,
     clearAllData,

@@ -2,6 +2,8 @@
 
 Doorables Vault is a standalone offline-first Progressive Web App for tracking a personal Disney Doorables collection and inventory.
 
+Current release: Version 1.1.0.
+
 There is no backend, account system, cloud database, Firebase, Supabase, Base44 service, external API, CDN dependency, paid service, or subscription.
 
 ## What Doorables Vault Is
@@ -17,7 +19,7 @@ There is no backend, account system, cloud database, Firebase, Supabase, Base44 
 - `index.html` - app shell and PWA metadata
 - `styles.css` - mobile-first dark UI
 - `app.js` - screens, filters, search, editing, import/export, and bulk mode
-- `db.js` - IndexedDB setup, seed data, validation, reference data, and image blob stubs
+- `db.js` - IndexedDB setup, seed data, validation, reference data, and local image blob storage
 - `service-worker.js` - offline cache for app files
 - `manifest.json` - installable PWA manifest
 - `icons/icon-192.png` and `icons/icon-512.png` - local PWA icons
@@ -73,7 +75,7 @@ IndexedDB stores:
 - `master` - master Doorables database records
 - `collection` - personal collection and inventory records
 - `activity` - local activity history
-- `images` - placeholder store for future image blobs
+- `images` - individual uploaded image blobs linked by master record `imageId`
 - `meta` - settings flags such as sample-data seeding and last backup/export date
 
 Clearing browser site data for this app will remove the local vault data.
@@ -90,6 +92,8 @@ Export collection data before deleting local vault data or replacing collection 
 Store backups somewhere safe, such as Google Drive, OneDrive, Dropbox, or an external drive.
 
 IndexedDB data lives inside the browser. It does not automatically travel with the project folder, GitHub repository, or ZIP file. Copying the app folder moves the app files, not your browser's saved collection data.
+
+Individual images are also stored locally in IndexedDB. The current JSON export options back up master and collection records, but they do not export image blobs yet.
 
 To move collection data to another device, export data from Settings on the old device, then import it from Settings on the new device.
 
@@ -111,7 +115,7 @@ Do not delete or lose these personal backup files:
 - Exported collection backups
 - Exported master database backups
 
-Copying the app folder is useful for moving or hosting the app, but it does not copy IndexedDB data from the browser. Use Settings export/import to move collection data between devices.
+Copying the app folder is useful for moving or hosting the app, but it does not copy IndexedDB data from the browser. Use Settings export/import to move collection data between devices. Full image backup/export is planned for a later enhancement, so images should be treated as device-local for now.
 
 ## Import and Export
 
@@ -186,10 +190,12 @@ Use Settings > Delete All Local Vault Data to remove all local data from the bro
 
 ## Image Support
 
-Version 1 uses image placeholders and stores the `imageId` field on master records. `db.js` includes safe placeholder functions for future IndexedDB image blob storage:
+Version 1.1.0 supports individual image upload from each Doorable detail page. Images are stored as blobs in the local IndexedDB `images` store and linked to Doorables by the master record `imageId`.
 
-- `saveImageBlob(imageId, blob)`
-- `getImageBlob(imageId)`
-- `deleteImageBlob(imageId)`
+Supported image file types are JPG, JPEG, PNG, and WEBP. Large images may be resized before storage to keep the app responsive on mobile devices.
+
+Removing an image deletes only the stored image blob. It does not delete the Doorable, collection quantities, notes, listing status, or master database record.
+
+Images do not automatically transfer between devices yet. Exporting master or collection JSON does not include image blobs. Full image backup/export and ZIP image pack import are intentionally left for a later version.
 
 ZIP image pack import is intentionally left as a placeholder action for a later version.

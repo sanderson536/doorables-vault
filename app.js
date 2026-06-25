@@ -2,9 +2,14 @@
   "use strict";
 
   const db = window.DoorablesDB;
-  const APP_VERSION = "1.0.0";
+  const APP_VERSION = "1.1.0";
+  const IMAGE_FILE_TYPES = ["image/jpeg", "image/png", "image/webp"];
+  const IMAGE_FILE_EXTENSIONS = ".jpg,.jpeg,.png,.webp";
+  const MAX_IMAGE_DIMENSION = 900;
+  const MAX_IMAGE_BYTES = 900 * 1024;
+  const IMAGE_JPEG_QUALITY = 0.84;
 
-  // App state stays centralized for v1.0. Rendering reads from this object only.
+  // App state stays centralized for v1.1.0. Rendering reads from this object only.
   const state = {
     tab: "dashboard",
     search: "",
@@ -34,6 +39,7 @@
 
   const elements = {};
   const saveTimers = new Map();
+  const imageUrlCache = new Map();
   let updatePromptShown = false;
   let refreshingForUpdate = false;
 
@@ -106,7 +112,7 @@
       } else if (action === "importMaster") {
         await pickAndImport("master");
       } else if (action === "imagePack") {
-        showToast("Image pack import is reserved for a future ZIP workflow. Image IDs are already supported.");
+        showToast("ZIP image pack import is reserved for a future workflow. Individual images can be uploaded from a Doorable detail view.");
       }
     });
 
@@ -116,15 +122,17 @@
     document.addEventListener("submit", handleDocumentSubmit);
     window.addEventListener("online", updateOnlineStatus);
     window.addEventListener("offline", updateOnlineStatus);
+    window.addEventListener("beforeunload", revokeAllImageUrls);
   }
 
   async function refreshData() {
-    const [master, collection, activity, counts, lastBackupDate] = await Promise.all([
+    const [master, collection, activity, counts, lastBackupDate, images] = await Promise.all([
       db.getAllMaster(),
       db.getAllCollection(),
       db.getRecentActivity(12),
       db.getStorageStats(),
-      db.getLastBackupDate()
+      db.getLastBackupDate(),
+      db.getAllImages()
     ]);
 
     state.master = master.sort(compareSeriesFranchiseCharacter);
@@ -134,6 +142,7 @@
     state.storage.counts = counts;
     state.storage.lastBackupDate = lastBackupDate || "";
     state.isOnline = navigator.onLine;
+    syncImageCache(master, images);
 
     if (navigator.storage && navigator.storage.estimate) {
       state.storage.estimate = await navigator.storage.estimate();
@@ -147,6 +156,56 @@
     if (state.tab === "settings") {
       render();
     }
+  }
+
+  // Image blobs are stored in IndexedDB and rendered through short-lived object
+  // URLs. The cache avoids async lookups during list rendering and revokes stale
+  // URLs whenever image records are replaced or removed.
+  function syncImageCache(masterRecords, imageRecords) {
+    const activeImageIds = new Set(masterRecords.map((record) => record.imageId).filter(Boolean));
+    const storedImages = new Map(
+      imageRecords
+        .filter((image) => image && image.imageId && image.blob && activeImageIds.has(image.imageId))
+        .map((image) => [image.imageId, image])
+    );
+
+    imageUrlCache.forEach((cached, imageId) => {
+      if (!storedImages.has(imageId)) {
+        URL.revokeObjectURL(cached.url);
+        imageUrlCache.delete(imageId);
+      }
+    });
+
+    storedImages.forEach((image, imageId) => {
+      const existing = imageUrlCache.get(imageId);
+      const size = image.size || image.blob.size || 0;
+      if (existing && existing.lastModified === image.lastModified && existing.size === size) {
+        return;
+      }
+
+      if (existing) {
+        URL.revokeObjectURL(existing.url);
+      }
+
+      imageUrlCache.set(imageId, {
+        url: URL.createObjectURL(image.blob),
+        lastModified: image.lastModified || "",
+        size
+      });
+    });
+  }
+
+  function revokeAllImageUrls() {
+    imageUrlCache.forEach((cached) => URL.revokeObjectURL(cached.url));
+    imageUrlCache.clear();
+  }
+
+  function getImageUrl(record) {
+    if (!record.imageId) {
+      return "";
+    }
+
+    return imageUrlCache.get(record.imageId)?.url || "";
   }
 
   async function registerServiceWorker() {
@@ -625,6 +684,15 @@
   }
 
   function renderArt(record) {
+    const imageUrl = getImageUrl(record);
+    if (imageUrl) {
+      return `
+        <div class="item-art has-image" title="${escapeAttr(record.character)}">
+          <img src="${escapeAttr(imageUrl)}" alt="${escapeAttr(record.character)}" loading="lazy">
+        </div>
+      `;
+    }
+
     return `<div class="item-art" title="Image placeholder for ${escapeAttr(record.imageId || record.character)}">${escapeHtml(initials(record.character))}</div>`;
   }
 
@@ -720,9 +788,12 @@
     return `
       <div class="list-stack">
         ${recent.map((record) => `
-          <div class="plain-row">
-            <p><strong>${escapeHtml(record.character)}</strong></p>
-            <p class="muted small">${escapeHtml(record.series)} | Added ${escapeHtml(formatDateOnly(record.dateAdded))} | Owned ${record.owned}</p>
+          <div class="plain-row recent-row">
+            ${renderArt(record)}
+            <div>
+              <p><strong>${escapeHtml(record.character)}</strong></p>
+              <p class="muted small">${escapeHtml(record.series)} | Added ${escapeHtml(formatDateOnly(record.dateAdded))} | Owned ${record.owned}</p>
+            </div>
           </div>
         `).join("")}
       </div>
@@ -798,6 +869,24 @@
     const bulkDec = event.target.closest("[data-bulk-dec]");
     if (bulkDec) {
       adjustOwned(bulkDec.dataset.bulkDec, -1, { rerender: false, afterSave: renderBulkModal });
+      return;
+    }
+
+    const imageUpload = event.target.closest("[data-image-upload]");
+    if (imageUpload) {
+      uploadDoorableImage(imageUpload.dataset.imageUpload);
+      return;
+    }
+
+    const imageReplace = event.target.closest("[data-image-replace]");
+    if (imageReplace) {
+      uploadDoorableImage(imageReplace.dataset.imageReplace);
+      return;
+    }
+
+    const imageRemove = event.target.closest("[data-image-remove]");
+    if (imageRemove) {
+      removeDoorableImage(imageRemove.dataset.imageRemove);
       return;
     }
 
@@ -938,6 +1027,151 @@
         showToast("Delete canceled. Type DELETE exactly to confirm.");
       }
     }
+  }
+
+  // Individual image support stores only blobs in the images object store.
+  // Master records keep the stable imageId link, so collection and inventory
+  // data remain untouched when an image is uploaded, replaced, or removed.
+  async function uploadDoorableImage(id) {
+    try {
+      const record = getMergedRecords().find((item) => item.id === id);
+      if (!record) {
+        showToast("Doorable not found.");
+        return;
+      }
+
+      const file = await pickImageFile();
+      if (!file) {
+        return;
+      }
+
+      if (!isSupportedImageFile(file)) {
+        showToast("Unsupported image type. Use JPG, PNG, or WEBP.");
+        return;
+      }
+
+      const imageId = await ensureImageId(record);
+      const blob = await prepareImageBlob(file);
+      await db.saveImageBlob(imageId, blob);
+      await db.logActivity(`Updated image for ${record.character}`);
+      await refreshData();
+      openDetailModal(id);
+      showToast("Image saved locally.");
+    } catch (error) {
+      showToast(error.message || "Image upload failed.");
+    }
+  }
+
+  async function removeDoorableImage(id) {
+    try {
+      const record = getMergedRecords().find((item) => item.id === id);
+      if (!record || !record.imageId) {
+        showToast("No image is linked to this Doorable.");
+        return;
+      }
+
+      const hasStoredImage = Boolean(getImageUrl(record));
+      if (!hasStoredImage) {
+        showToast("No stored image found for this Doorable.");
+        return;
+      }
+
+      const shouldRemove = window.confirm(
+        `Remove the stored image for ${record.character}?\n\nThis only removes the image blob. It does not delete the Doorable record, quantities, notes, or collection data.`
+      );
+      if (!shouldRemove) {
+        return;
+      }
+
+      await db.deleteImageBlob(record.imageId);
+      await db.logActivity(`Removed image for ${record.character}`);
+      await refreshData();
+      openDetailModal(id);
+      showToast("Image removed. Doorable data was not changed.");
+    } catch (error) {
+      showToast(error.message || "Image removal failed.");
+    }
+  }
+
+  async function ensureImageId(record) {
+    if (record.imageId) {
+      return record.imageId;
+    }
+
+    const master = state.master.find((item) => item.id === record.id);
+    if (!master) {
+      throw new Error("Master record not found for image upload.");
+    }
+
+    const imageId = record.id;
+    const updatedMaster = {
+      ...master,
+      imageId
+    };
+
+    await db.putMaster(updatedMaster);
+    replaceMaster(updatedMaster);
+    return imageId;
+  }
+
+  function pickImageFile() {
+    return new Promise((resolve) => {
+      const input = document.createElement("input");
+      input.type = "file";
+      input.accept = IMAGE_FILE_EXTENSIONS;
+      input.addEventListener("change", () => resolve(input.files[0] || null));
+      input.click();
+    });
+  }
+
+  function isSupportedImageFile(file) {
+    return IMAGE_FILE_TYPES.includes(file.type) || /\.(jpe?g|png|webp)$/i.test(file.name || "");
+  }
+
+  async function prepareImageBlob(file) {
+    if (file.size <= MAX_IMAGE_BYTES) {
+      return file;
+    }
+
+    if (typeof createImageBitmap !== "function") {
+      return file;
+    }
+
+    const bitmap = await createImageBitmap(file).catch(() => null);
+    if (!bitmap) {
+      return file;
+    }
+
+    const scale = Math.min(1, MAX_IMAGE_DIMENSION / Math.max(bitmap.width, bitmap.height));
+    const width = Math.max(1, Math.round(bitmap.width * scale));
+    const height = Math.max(1, Math.round(bitmap.height * scale));
+    const canvas = document.createElement("canvas");
+    canvas.width = width;
+    canvas.height = height;
+    const context = canvas.getContext("2d");
+    if (!context) {
+      if (typeof bitmap.close === "function") {
+        bitmap.close();
+      }
+      return file;
+    }
+
+    context.drawImage(bitmap, 0, 0, width, height);
+    if (typeof bitmap.close === "function") {
+      bitmap.close();
+    }
+
+    const outputType = file.type === "image/png" || file.type === "image/webp" ? file.type : "image/jpeg";
+    const quality = outputType === "image/png" ? undefined : IMAGE_JPEG_QUALITY;
+    if (typeof canvas.toBlob !== "function") {
+      return file;
+    }
+
+    return new Promise((resolve) => {
+      canvas.toBlob((blob) => {
+        resolve(blob || file);
+      }, outputType, quality);
+    });
   }
 
   // Import and export actions.
@@ -1558,6 +1792,7 @@
         <div class="full-row">
           ${renderDoorableCard(record, { controls: false, database: true })}
         </div>
+        ${renderImageControls(record)}
         ${renderMasterInput(record, "character", "Character")}
         ${renderMasterInput(record, "series", "Series", { list: "series-reference-options" })}
         ${renderMasterSelect(record, "category", "Category", db.categories)}
@@ -1593,6 +1828,23 @@
           <p class="muted small">Last modified: ${formatDateTime(record.lastModified) || "Not set"}</p>
         </div>
         ${renderSeriesDatalist()}
+      </div>
+    `;
+  }
+
+  function renderImageControls(record) {
+    const hasStoredImage = Boolean(getImageUrl(record));
+    return `
+      <div class="image-control-panel full-row">
+        <div>
+          <p><strong>Image</strong></p>
+          <p class="muted small">Image ID: ${escapeHtml(record.imageId || "Not set yet")}</p>
+        </div>
+        <div class="form-actions image-actions">
+          <button class="primary-button" type="button" data-image-upload="${escapeAttr(record.id)}" ${hasStoredImage ? "disabled" : ""}>Upload Image</button>
+          <button class="secondary-button" type="button" data-image-replace="${escapeAttr(record.id)}" ${hasStoredImage ? "" : "disabled"}>Replace Image</button>
+          <button class="danger-button" type="button" data-image-remove="${escapeAttr(record.id)}" ${hasStoredImage ? "" : "disabled"}>Remove Image</button>
+        </div>
       </div>
     `;
   }
