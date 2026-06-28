@@ -926,6 +926,31 @@
     };
   }
 
+  function normalizeActivity(record) {
+    return {
+      id: cleanString(record && record.id, "") || makeLocalId(),
+      action: cleanString(record && record.action, "Activity"),
+      timestamp: cleanString(record && record.timestamp, new Date().toISOString())
+    };
+  }
+
+  function normalizeMeta(record) {
+    return {
+      key: cleanString(record && record.key, "") || makeLocalId(),
+      value: record ? record.value : ""
+    };
+  }
+
+  function normalizeImageRecord(record) {
+    return {
+      imageId: cleanString(record && record.imageId, ""),
+      blob: record && record.blob,
+      mimeType: cleanString(record && record.mimeType, "application/octet-stream"),
+      size: cleanNumber(record && record.size),
+      lastModified: cleanString(record && record.lastModified, new Date().toISOString())
+    };
+  }
+
   async function getMeta(key) {
     const entry = await readOne(STORES.meta, key);
     return entry ? entry.value : undefined;
@@ -1026,6 +1051,98 @@
     return validation.records.length;
   }
 
+  async function deleteCollectionRecords(ids) {
+    const uniqueIds = [...new Set((ids || []).filter(isNonEmptyString))];
+    if (!uniqueIds.length) {
+      return 0;
+    }
+
+    const db = await openDb();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(STORES.collection, "readwrite");
+      const store = tx.objectStore(STORES.collection);
+      uniqueIds.forEach((id) => store.delete(id));
+      tx.oncomplete = () => resolve(uniqueIds.length);
+      tx.onerror = () => reject(tx.error);
+    });
+  }
+
+  async function saveImageRecord(record) {
+    const normalized = normalizeImageRecord(record);
+    if (!normalized.imageId || !(normalized.blob instanceof Blob)) {
+      throw new Error("Image records must include imageId and Blob.");
+    }
+
+    return writeOne(STORES.images, normalized);
+  }
+
+  async function deleteImageRecords(imageIds) {
+    const uniqueIds = [...new Set((imageIds || []).filter(isNonEmptyString))];
+    if (!uniqueIds.length) {
+      return 0;
+    }
+
+    const db = await openDb();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(STORES.images, "readwrite");
+      const store = tx.objectStore(STORES.images);
+      uniqueIds.forEach((imageId) => store.delete(imageId));
+      tx.oncomplete = () => resolve(uniqueIds.length);
+      tx.onerror = () => reject(tx.error);
+    });
+  }
+
+  async function restoreFullBackup(payload) {
+    const masterValidation = validateMasterRecords(payload.master || []);
+    assertValidation(masterValidation, "Full backup master database");
+    const collectionValidation = validateCollectionRecords(
+      payload.collection || [],
+      masterValidation.records.map((record) => record.id)
+    );
+    assertValidation(collectionValidation, "Full backup collection");
+
+    const activity = (payload.activity || []).map(normalizeActivity);
+    const meta = (payload.meta || []).map(normalizeMeta);
+    const images = (payload.images || []).map(normalizeImageRecord);
+    images.forEach((image) => {
+      if (!image.imageId || !(image.blob instanceof Blob)) {
+        throw new Error("Full backup contains an invalid image record.");
+      }
+    });
+
+    const db = await openDb();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction([
+        STORES.master,
+        STORES.collection,
+        STORES.activity,
+        STORES.images,
+        STORES.meta
+      ], "readwrite");
+
+      tx.objectStore(STORES.master).clear();
+      tx.objectStore(STORES.collection).clear();
+      tx.objectStore(STORES.activity).clear();
+      tx.objectStore(STORES.images).clear();
+      tx.objectStore(STORES.meta).clear();
+
+      masterValidation.records.forEach((record) => tx.objectStore(STORES.master).put(record));
+      collectionValidation.records.forEach((record) => tx.objectStore(STORES.collection).put(record));
+      activity.forEach((record) => tx.objectStore(STORES.activity).put(record));
+      images.forEach((record) => tx.objectStore(STORES.images).put(record));
+      meta.forEach((record) => tx.objectStore(STORES.meta).put(record));
+
+      tx.oncomplete = () => resolve({
+        master: masterValidation.records.length,
+        collection: collectionValidation.records.length,
+        activity: activity.length,
+        images: images.length,
+        meta: meta.length
+      });
+      tx.onerror = () => reject(tx.error);
+    });
+  }
+
   async function clearAllData() {
     await clearStore(STORES.master);
     await clearStore(STORES.collection);
@@ -1097,14 +1214,20 @@
     importCollection,
     exportMaster: () => readAll(STORES.master),
     exportCollection: () => readAll(STORES.collection),
+    exportActivity: () => readAll(STORES.activity),
+    exportMeta: () => readAll(STORES.meta),
     getAllImages: () => readAll(STORES.images),
     getLastBackupDate,
     recordBackupExport,
     clearAllData,
+    deleteCollectionRecords,
+    restoreFullBackup,
     getStorageStats,
     logActivity,
+    saveImageRecord,
     saveImageBlob,
     getImageBlob,
-    deleteImageBlob
+    deleteImageBlob,
+    deleteImageRecords
   };
 })();

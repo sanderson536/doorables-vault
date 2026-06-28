@@ -2,14 +2,22 @@
   "use strict";
 
   const db = window.DoorablesDB;
-  const APP_VERSION = "1.1.0";
+  const zip = window.DoorablesZip;
+  const APP_VERSION = "1.3.0";
   const IMAGE_FILE_TYPES = ["image/jpeg", "image/png", "image/webp"];
   const IMAGE_FILE_EXTENSIONS = ".jpg,.jpeg,.png,.webp";
+  const ZIP_FILE_EXTENSIONS = ".zip,application/zip,application/x-zip-compressed";
+  const IMAGE_EXTENSION_TO_MIME = {
+    jpg: "image/jpeg",
+    jpeg: "image/jpeg",
+    png: "image/png",
+    webp: "image/webp"
+  };
   const MAX_IMAGE_DIMENSION = 900;
   const MAX_IMAGE_BYTES = 900 * 1024;
   const IMAGE_JPEG_QUALITY = 0.84;
 
-  // App state stays centralized for v1.1.0. Rendering reads from this object only.
+  // App state stays centralized for v1.3.0. Rendering reads from this object only.
   const state = {
     tab: "dashboard",
     search: "",
@@ -40,8 +48,11 @@
   const elements = {};
   const saveTimers = new Map();
   const imageUrlCache = new Map();
+  const imagePackBuilder = createEmptyImagePackBuilder();
   let updatePromptShown = false;
   let refreshingForUpdate = false;
+  let pendingModalResolve = null;
+  let pendingModalCleanup = null;
 
   document.addEventListener("DOMContentLoaded", init);
 
@@ -539,30 +550,34 @@
       </section>
 
       <section class="section-band">
-        <div class="section-title-row"><h3>About / Version</h3></div>
-        <div class="stat-grid">
-          ${renderStat("App Name", "Doorables Vault")}
-          ${renderStat("Version", APP_VERSION)}
-          ${renderStat("Storage Type", "IndexedDB")}
-          ${renderStat("Offline Status", state.isOnline ? "Online" : "Offline")}
-          ${renderStat("Last Backup Date", state.storage.lastBackupDate ? formatDateTime(state.storage.lastBackupDate) : "No backup recorded")}
-        </div>
-      </section>
-
-      <section class="section-band">
-        <div class="section-title-row"><h3>Master Database Import / Export</h3></div>
+        <div class="section-title-row"><h3>Backup & Restore</h3></div>
         <div class="form-actions">
+          <button class="secondary-button" type="button" data-settings-action="export-collection">Export Collection JSON</button>
+          <button class="primary-button" type="button" data-settings-action="import-collection">Import Collection JSON</button>
+          <button class="secondary-button" type="button" data-settings-action="export-master">Export Master Database JSON</button>
           <button class="primary-button" type="button" data-settings-action="import-master">Import Master Database JSON</button>
           <button class="primary-button" type="button" data-settings-action="import-master-csv">Import Master Database CSV</button>
-          <button class="secondary-button" type="button" data-settings-action="export-master">Export Master Database JSON</button>
+          <button class="secondary-button" type="button" data-settings-action="export-full-backup">Export Full Vault Backup</button>
+          <button class="primary-button" type="button" data-settings-action="import-full-backup">Import Full Vault Backup</button>
         </div>
       </section>
 
       <section class="section-band">
-        <div class="section-title-row"><h3>Collection JSON</h3></div>
+        <div class="section-title-row"><h3>Images</h3></div>
         <div class="form-actions">
-          <button class="primary-button" type="button" data-settings-action="import-collection">Import Collection JSON</button>
-          <button class="secondary-button" type="button" data-settings-action="export-collection">Export Collection JSON</button>
+          <button class="primary-button" type="button" data-settings-action="build-image-pack">Build Image Pack</button>
+          <button class="primary-button" type="button" data-settings-action="import-image-pack">Import Image Pack ZIP</button>
+          <button class="secondary-button" type="button" data-settings-action="export-image-pack">Export Image Pack ZIP</button>
+          <button class="secondary-button" type="button" data-settings-action="cleanup-orphan-images">Remove Orphan Images</button>
+        </div>
+      </section>
+
+      <section class="section-band">
+        <div class="section-title-row"><h3>Maintenance</h3></div>
+        <p class="muted small">Export a Full Vault Backup before deleting local data or cleaning up orphan records.</p>
+        <div class="form-actions">
+          <button class="secondary-button" type="button" data-settings-action="cleanup-orphan-collection">Remove Orphan Collection Records</button>
+          <button class="danger-button" type="button" data-settings-action="clear-data">Delete All Local Vault Data</button>
         </div>
       </section>
 
@@ -580,10 +595,13 @@
       </section>
 
       <section class="section-band">
-        <div class="section-title-row"><h3>Delete All Local Vault Data</h3></div>
-        <p class="muted small">This permanently deletes the master database, collection data, activity history, images, and settings/meta data stored in IndexedDB on this device.</p>
-        <div class="form-actions">
-          <button class="danger-button" type="button" data-settings-action="clear-data">Delete All Local Vault Data</button>
+        <div class="section-title-row"><h3>About / Version</h3></div>
+        <div class="stat-grid">
+          ${renderStat("App Name", "Doorables Vault")}
+          ${renderStat("Version", APP_VERSION)}
+          ${renderStat("Storage Type", "IndexedDB")}
+          ${renderStat("Offline Status", state.isOnline ? "Online" : "Offline")}
+          ${renderStat("Last Backup Date", state.storage.lastBackupDate ? formatDateTime(state.storage.lastBackupDate) : "No backup recorded")}
         </div>
       </section>
     `;
@@ -813,6 +831,9 @@
   function handleDocumentClick(event) {
     const closeButton = event.target.closest("[data-close-modal]");
     if (closeButton) {
+      if (resolvePendingModalChoice("")) {
+        return;
+      }
       closeModal();
       return;
     }
@@ -890,6 +911,30 @@
       return;
     }
 
+    const builderUploadImages = event.target.closest("[data-builder-upload-images]");
+    if (builderUploadImages) {
+      uploadImagePackBuilderImages();
+      return;
+    }
+
+    const builderUploadCsv = event.target.closest("[data-builder-upload-csv]");
+    if (builderUploadCsv) {
+      uploadImagePackBuilderCsv();
+      return;
+    }
+
+    const builderClearAssignment = event.target.closest("[data-builder-clear-assignment]");
+    if (builderClearAssignment) {
+      clearImagePackBuilderAssignment(builderClearAssignment.dataset.builderClearAssignment);
+      return;
+    }
+
+    const builderExportZip = event.target.closest("[data-builder-export-zip]");
+    if (builderExportZip) {
+      exportBuiltImagePackZip();
+      return;
+    }
+
     const settingsAction = event.target.closest("[data-settings-action]");
     if (settingsAction) {
       handleSettingsAction(settingsAction.dataset.settingsAction);
@@ -927,6 +972,41 @@
       return;
     }
 
+    const builderCategory = event.target.closest("[data-builder-category]");
+    if (builderCategory) {
+      imagePackBuilder.category = builderCategory.value;
+      imagePackBuilder.series = "";
+      renderImagePackBuilder();
+      return;
+    }
+
+    const builderSeries = event.target.closest("[data-builder-series]");
+    if (builderSeries) {
+      imagePackBuilder.series = builderSeries.value;
+      renderImagePackBuilder();
+      return;
+    }
+
+    const builderAllSeries = event.target.closest("[data-builder-all-series]");
+    if (builderAllSeries) {
+      imagePackBuilder.allSeries = builderAllSeries.checked;
+      renderImagePackBuilder();
+      return;
+    }
+
+    const builderUnassigned = event.target.closest("[data-builder-unassigned-only]");
+    if (builderUnassigned) {
+      imagePackBuilder.showUnassignedOnly = builderUnassigned.checked;
+      renderImagePackBuilder();
+      return;
+    }
+
+    const builderAssign = event.target.closest("[data-builder-assign]");
+    if (builderAssign) {
+      assignImagePackBuilderImage(builderAssign.dataset.builderAssign, builderAssign.value);
+      return;
+    }
+
     const detailField = event.target.closest("[data-detail-field]");
     if (detailField) {
       saveDetailField(detailField);
@@ -940,6 +1020,13 @@
   }
 
   function handleDocumentInput(event) {
+    const builderSearch = event.target.closest("[data-builder-search]");
+    if (builderSearch) {
+      imagePackBuilder.search = builderSearch.value;
+      renderImagePackBuilder();
+      return;
+    }
+
     const autoField = event.target.closest("[data-autosave-input]");
     if (!autoField) {
       return;
@@ -1014,7 +1101,21 @@
     } else if (action === "import-collection") {
       await pickAndImport("collection");
     } else if (action === "export-collection") {
-      await exportJson("doorables-collection.json", await db.exportCollection());
+      await exportCollectionJson();
+    } else if (action === "cleanup-orphan-collection") {
+      await removeOrphanCollectionRecords();
+    } else if (action === "build-image-pack") {
+      openImagePackBuilder();
+    } else if (action === "import-image-pack") {
+      await importImagePackZip();
+    } else if (action === "export-image-pack") {
+      await exportImagePackZip();
+    } else if (action === "cleanup-orphan-images") {
+      await removeOrphanImages();
+    } else if (action === "export-full-backup") {
+      await exportFullVaultBackup();
+    } else if (action === "import-full-backup") {
+      await importFullVaultBackup();
     } else if (action === "clear-data") {
       const confirmation = window.prompt(
         "Delete All Local Vault Data\n\nThis permanently deletes these IndexedDB records on this device:\n\n- master database\n- collection data\n- activity history\n- images\n- settings/meta data\n\nExport a backup first if you need to keep anything.\n\nType DELETE to continue."
@@ -1124,6 +1225,17 @@
     });
   }
 
+  function pickImageFiles() {
+    return new Promise((resolve) => {
+      const input = document.createElement("input");
+      input.type = "file";
+      input.multiple = true;
+      input.accept = IMAGE_FILE_EXTENSIONS;
+      input.addEventListener("change", () => resolve(Array.from(input.files || [])));
+      input.click();
+    });
+  }
+
   function isSupportedImageFile(file) {
     return IMAGE_FILE_TYPES.includes(file.type) || /\.(jpe?g|png|webp)$/i.test(file.name || "");
   }
@@ -1174,6 +1286,969 @@
     });
   }
 
+  async function exportCollectionJson() {
+    const summary = getCollectionExportSummary();
+    showCollectionExportSummary(summary);
+    await exportJson("doorables-collection.json", summary.records);
+  }
+
+  function getCollectionExportSummary() {
+    const orphans = getOrphanCollectionRecords();
+    const orphanIds = new Set(orphans.map((record) => record.id));
+    const records = state.collection.filter((record) => !orphanIds.has(record.id));
+
+    return {
+      totalRecords: state.collection.length,
+      exportedRecords: records.length,
+      skippedOrphanRecords: orphans.length,
+      skippedOrphanIds: orphans.map((record) => record.id).sort(compareText),
+      records
+    };
+  }
+
+  function showCollectionExportSummary(summary) {
+    const lines = [
+      "Collection Export Summary",
+      "",
+      `Total collection records: ${summary.totalRecords}`,
+      `Exported collection records: ${summary.exportedRecords}`,
+      `Skipped orphan records: ${summary.skippedOrphanRecords}`
+    ];
+
+    if (summary.skippedOrphanIds.length) {
+      lines.push(
+        "",
+        "Skipped orphan IDs:",
+        ...formatIdList(summary.skippedOrphanIds),
+        "",
+        "These records were not exported because they do not exist in the current master database."
+      );
+    }
+
+    window.alert(lines.join("\n"));
+  }
+
+  async function removeOrphanCollectionRecords() {
+    const orphans = getOrphanCollectionRecords();
+    const orphanIds = orphans.map((record) => record.id).sort(compareText);
+
+    if (!orphanIds.length) {
+      window.alert("No orphan collection records were found.");
+      return;
+    }
+
+    const confirmation = window.prompt(
+      "Remove Orphan Collection Records\n\n" +
+      "Orphan collection records are ownership and inventory records that no longer match any item in the current master database.\n\n" +
+      "This will delete only collection records whose IDs do not exist in the master database.\n\n" +
+      "It will not delete master database records.\n" +
+      "It will not delete images.\n\n" +
+      `Orphan records found: ${orphanIds.length}\n\n` +
+      `IDs:\n${formatIdList(orphanIds).join("\n")}\n\n` +
+      "Type REMOVE to delete these orphan collection records."
+    );
+
+    if (confirmation !== "REMOVE") {
+      if (confirmation !== null) {
+        showToast("Cleanup canceled. Type REMOVE exactly to confirm.");
+      }
+      return;
+    }
+
+    const removedCount = await db.deleteCollectionRecords(orphanIds);
+    await db.logActivity(`Removed ${removedCount} orphan collection record${removedCount === 1 ? "" : "s"}`);
+    await refreshData();
+    showToast(`Removed ${removedCount} orphan collection record${removedCount === 1 ? "" : "s"}.`);
+  }
+
+  async function importImagePackZip() {
+    try {
+      assertZipSupport();
+      const file = await pickZipFile();
+      if (!file) {
+        return;
+      }
+
+      const entries = (await zip.readZip(file)).filter((entry) => !entry.isDirectory);
+      const masterImageIds = getMasterImageIdSet();
+      const existingImageIds = new Set((await db.getAllImages()).map((image) => image.imageId));
+      const summary = {
+        totalFiles: entries.length,
+        validImageFiles: 0,
+        matchedToMaster: 0,
+        imported: 0,
+        replaced: 0,
+        skipped: 0,
+        unsupportedFiles: [],
+        orphanImageFiles: []
+      };
+      const candidates = [];
+
+      entries.forEach((entry) => {
+        const info = getZipImageInfo(entry.name);
+        if (!info) {
+          summary.unsupportedFiles.push(entry.name);
+          return;
+        }
+
+        summary.validImageFiles += 1;
+        if (!masterImageIds.has(info.imageId)) {
+          summary.orphanImageFiles.push(`${entry.name} (${info.imageId})`);
+          return;
+        }
+
+        summary.matchedToMaster += 1;
+        candidates.push({ entry, ...info, exists: existingImageIds.has(info.imageId) });
+      });
+
+      const existingMatches = candidates.filter((item) => item.exists);
+      const replaceExisting = existingMatches.length
+        ? window.confirm(`${existingMatches.length} matching image${existingMatches.length === 1 ? "" : "s"} already exist. Replace existing images?`)
+        : false;
+
+      for (const item of candidates) {
+        if (item.exists && !replaceExisting) {
+          summary.skipped += 1;
+          continue;
+        }
+
+        const blob = await item.entry.blob(item.mimeType);
+        const prepared = await prepareImageBlob(blob);
+        await db.saveImageRecord({
+          imageId: item.imageId,
+          blob: prepared,
+          mimeType: prepared.type || item.mimeType,
+          size: prepared.size,
+          lastModified: new Date().toISOString()
+        });
+
+        if (item.exists) {
+          summary.replaced += 1;
+        } else {
+          summary.imported += 1;
+        }
+      }
+
+      await db.logActivity(`Imported ${summary.imported + summary.replaced} images from ZIP`);
+      await refreshData();
+      showImagePackImportSummary(summary);
+    } catch (error) {
+      showToast(error.message || "Image pack import failed.");
+    }
+  }
+
+  async function exportImagePackZip() {
+    try {
+      assertZipSupport();
+      const images = await db.getAllImages();
+      const imageFiles = await buildImageZipFiles(images, "");
+      imageFiles.files.push({
+        name: "image_manifest.json",
+        data: JSON.stringify(imageFiles.manifest, null, 2)
+      });
+
+      const blob = await zip.createZip(imageFiles.files);
+      await downloadBlob(blob, `doorables_images_export_${dateStamp()}.zip`);
+      await markBackupExported();
+      showToast(`Exported ${images.length} image${images.length === 1 ? "" : "s"}.`);
+    } catch (error) {
+      showToast(error.message || "Image export failed.");
+    }
+  }
+
+  async function exportFullVaultBackup() {
+    try {
+      assertZipSupport();
+      const backupDate = new Date().toISOString();
+      const [master, collection, activity, meta, images] = await Promise.all([
+        db.exportMaster(),
+        db.exportCollection(),
+        db.exportActivity(),
+        db.exportMeta(),
+        db.getAllImages()
+      ]);
+      const imageFiles = await buildImageZipFiles(images, "images/");
+      const metadata = {
+        appName: "Doorables Vault",
+        appVersion: APP_VERSION,
+        backupDate,
+        totalMasterRecords: master.length,
+        totalCollectionRecords: collection.length,
+        totalActivityRecords: activity.length,
+        totalImages: images.length,
+        backupFormatVersion: "1.0"
+      };
+      const files = [
+        { name: "master_database.json", data: JSON.stringify(master, null, 2) },
+        { name: "collection.json", data: JSON.stringify(collection, null, 2) },
+        { name: "activity.json", data: JSON.stringify(activity, null, 2) },
+        { name: "settings.json", data: JSON.stringify(meta, null, 2) },
+        { name: "reference_data.json", data: JSON.stringify(getReferenceData(), null, 2) },
+        { name: "metadata.json", data: JSON.stringify(metadata, null, 2) },
+        { name: "images/", data: "" },
+        ...imageFiles.files,
+        { name: "images/image_manifest.json", data: JSON.stringify(imageFiles.manifest, null, 2) }
+      ];
+
+      const blob = await zip.createZip(files);
+      await downloadBlob(blob, `doorables_vault_backup_${dateStamp()}.zip`);
+      await markBackupExported(backupDate);
+      window.alert(
+        "Full Vault Backup Exported\n\n" +
+        `Master records: ${master.length}\n` +
+        `Collection records: ${collection.length}\n` +
+        `Activity records: ${activity.length}\n` +
+        `Images: ${images.length}`
+      );
+    } catch (error) {
+      showToast(error.message || "Full vault backup failed.");
+    }
+  }
+
+  async function importFullVaultBackup() {
+    try {
+      assertZipSupport();
+      const file = await pickZipFile();
+      if (!file) {
+        return;
+      }
+
+      const preview = await parseFullVaultBackup(file);
+      showRestorePreview(preview);
+      if (preview.blockers.length) {
+        showToast("Restore canceled. Fix the backup validation errors first.");
+        return;
+      }
+
+      const confirmation = window.prompt(
+        "Import Full Vault Backup\n\nThis will replace the current local master database, collection data, activity history, images, and settings/meta data in IndexedDB.\n\nType RESTORE to continue."
+      );
+      if (confirmation !== "RESTORE") {
+        if (confirmation !== null) {
+          showToast("Restore canceled. Type RESTORE exactly to confirm.");
+        }
+        return;
+      }
+
+      const result = await db.restoreFullBackup(preview.payload);
+      await db.recordBackupExport(preview.metadata.backupDate || new Date().toISOString());
+      await refreshData();
+      window.alert(
+        "Full Vault Restore Complete\n\n" +
+        `Master records: ${result.master}\n` +
+        `Collection records: ${result.collection}\n` +
+        `Activity records: ${result.activity}\n` +
+        `Images: ${result.images}`
+      );
+    } catch (error) {
+      showToast(error.message || "Full vault restore failed.");
+    }
+  }
+
+  async function removeOrphanImages() {
+    const images = await db.getAllImages();
+    const masterImageIds = getMasterImageIdSet();
+    const orphanIds = images
+      .map((image) => image.imageId)
+      .filter((imageId) => imageId && !masterImageIds.has(imageId))
+      .sort(compareText);
+
+    if (!orphanIds.length) {
+      window.alert("No orphan images were found.");
+      return;
+    }
+
+    const confirmation = window.prompt(
+      "Remove Orphan Images\n\n" +
+      "An orphan image is stored in IndexedDB but its imageId does not exist in the current master database.\n\n" +
+      "This deletes only orphan image blobs. It does not delete master records, collection records, or activity history.\n\n" +
+      "Export a Full Vault Backup first if you want a copy before cleanup.\n\n" +
+      `Orphan images found: ${orphanIds.length}\n\n` +
+      `Image IDs:\n${formatIdList(orphanIds).join("\n")}\n\n` +
+      "Type REMOVE to delete these orphan images."
+    );
+
+    if (confirmation !== "REMOVE") {
+      if (confirmation !== null) {
+        showToast("Image cleanup canceled. Type REMOVE exactly to confirm.");
+      }
+      return;
+    }
+
+    const removedCount = await db.deleteImageRecords(orphanIds);
+    await db.logActivity(`Removed ${removedCount} orphan image${removedCount === 1 ? "" : "s"}`);
+    await refreshData();
+    showToast(`Removed ${removedCount} orphan image${removedCount === 1 ? "" : "s"}.`);
+  }
+
+  // Image Pack Builder creates a renamed ZIP from uploaded local image files.
+  // It never renames original files and does not write images into IndexedDB.
+  function createEmptyImagePackBuilder() {
+    return {
+      category: "",
+      series: "",
+      allSeries: false,
+      images: [],
+      search: "",
+      showUnassignedOnly: false,
+      csvWarnings: []
+    };
+  }
+
+  function resetImagePackBuilder() {
+    cleanupImagePackBuilder();
+    Object.assign(imagePackBuilder, createEmptyImagePackBuilder());
+  }
+
+  function cleanupImagePackBuilder() {
+    if (!imagePackBuilder || !Array.isArray(imagePackBuilder.images)) {
+      return;
+    }
+
+    imagePackBuilder.images.forEach((item) => {
+      if (item.previewUrl) {
+        URL.revokeObjectURL(item.previewUrl);
+      }
+    });
+  }
+
+  function openImagePackBuilder() {
+    resetImagePackBuilder();
+    elements.modalTitle.textContent = "Image Pack Builder";
+    elements.modal.hidden = false;
+    renderImagePackBuilder();
+  }
+
+  function isImagePackBuilderScopeReady() {
+    return imagePackBuilder.allSeries || Boolean(imagePackBuilder.category && imagePackBuilder.series);
+  }
+
+  function renderImagePackBuilder() {
+    const activeElement = document.activeElement;
+    const restoreSearchFocus = activeElement?.matches("[data-builder-search]");
+    const searchSelectionStart = restoreSearchFocus ? activeElement.selectionStart : null;
+    const searchSelectionEnd = restoreSearchFocus ? activeElement.selectionEnd : null;
+    const scopeReady = isImagePackBuilderScopeReady();
+    const categories = mergeReferenceOptions(db.categories, uniqueValues(state.master, "category"));
+    const series = imagePackBuilder.category
+      ? getSeriesOptions(
+          state.master.filter((record) => record.category === imagePackBuilder.category),
+          imagePackBuilder.category,
+          true
+        )
+      : [];
+    const candidateRecords = getImagePackBuilderCandidates();
+    const validation = getImagePackBuilderValidation();
+    const displayedImages = getDisplayedImagePackBuilderImages();
+
+    elements.modalBody.innerHTML = `
+      <div class="builder-flow">
+        <section class="builder-step">
+          <div class="section-title-row">
+            <h3>1. Select Series</h3>
+          </div>
+          <div class="form-grid">
+            <label class="checkbox-row full-row">
+              <input type="checkbox" data-builder-all-series ${imagePackBuilder.allSeries ? "checked" : ""}>
+              <span>Advanced: All Series</span>
+            </label>
+            <label class="field">
+              <span>Category</span>
+              <select data-builder-category ${imagePackBuilder.allSeries ? "disabled" : ""}>
+                <option value="">Select category</option>
+                ${categories.map((category) => `<option value="${escapeAttr(category)}" ${imagePackBuilder.category === category ? "selected" : ""}>${escapeHtml(category)}</option>`).join("")}
+              </select>
+            </label>
+            <label class="field">
+              <span>Series</span>
+              <select data-builder-series ${imagePackBuilder.allSeries || !imagePackBuilder.category ? "disabled" : ""}>
+                <option value="">Select series</option>
+                ${series.map((name) => `<option value="${escapeAttr(name)}" ${imagePackBuilder.series === name ? "selected" : ""}>${escapeHtml(name)}</option>`).join("")}
+              </select>
+            </label>
+          </div>
+          ${imagePackBuilder.allSeries ? '<p class="muted small builder-warning">All Series mode searches the full master database. Use it only when your image batch spans multiple series.</p>' : ""}
+          ${scopeReady ? renderImagePackBuilderMatchList(candidateRecords) : '<p class="muted small">Select a category and series before uploading or assigning images.</p>'}
+        </section>
+
+        <section class="builder-step">
+          <div class="section-title-row">
+            <h3>2. Upload Images</h3>
+            <span class="muted small">${imagePackBuilder.images.length} file${imagePackBuilder.images.length === 1 ? "" : "s"}</span>
+          </div>
+          <p class="muted small">Supported formats: JPG, JPEG, PNG, and WEBP. Original files are not renamed or modified.</p>
+          <div class="form-actions">
+            <button class="primary-button" type="button" data-builder-upload-images ${scopeReady ? "" : "disabled"}>Select Image Files</button>
+          </div>
+        </section>
+
+        <section class="builder-step">
+          <div class="section-title-row">
+            <h3>3. Assign Images</h3>
+          </div>
+          <div class="form-grid">
+            <label class="field full-row">
+              <span>Search matching Doorables</span>
+              <input type="search" data-builder-search value="${escapeAttr(imagePackBuilder.search)}" placeholder="Character, franchise, rarity, or imageId" ${scopeReady ? "" : "disabled"}>
+            </label>
+            <label class="checkbox-row">
+              <input type="checkbox" data-builder-unassigned-only ${imagePackBuilder.showUnassignedOnly ? "checked" : ""}>
+              <span>Only show unassigned images</span>
+            </label>
+            <div class="form-actions">
+              <button class="secondary-button" type="button" data-builder-upload-csv ${scopeReady && imagePackBuilder.images.length ? "" : "disabled"}>Upload Mapping CSV</button>
+            </div>
+          </div>
+          ${renderImagePackBuilderWarnings()}
+          <div class="builder-image-list">
+            ${displayedImages.length
+              ? displayedImages.map((item) => renderImagePackBuilderImageRow(item, candidateRecords, validation)).join("")
+              : renderEmpty("No images to assign", imagePackBuilder.images.length ? "All visible images are assigned." : "Upload image files to start assigning them.")}
+          </div>
+        </section>
+
+        <section class="builder-step">
+          <div class="section-title-row">
+            <h3>4. Review</h3>
+          </div>
+          ${renderImagePackBuilderSummary(validation)}
+        </section>
+
+        <section class="builder-step">
+          <div class="section-title-row">
+            <h3>5. Export ZIP</h3>
+          </div>
+          <p class="muted small">The ZIP will contain renamed copies and an image_manifest.json file. Images are not imported into the vault automatically.</p>
+          <div class="form-actions">
+            <button class="primary-button" type="button" data-builder-export-zip ${validation.canExport ? "" : "disabled"}>Export Image Pack ZIP</button>
+          </div>
+        </section>
+      </div>
+    `;
+
+    if (restoreSearchFocus) {
+      const searchInput = elements.modalBody.querySelector("[data-builder-search]");
+      if (searchInput) {
+        searchInput.focus();
+        searchInput.setSelectionRange(searchSelectionStart, searchSelectionEnd);
+      }
+    }
+  }
+
+  function renderImagePackBuilderMatchList(records) {
+    return `
+      <div class="builder-match-panel">
+        <p class="muted small">${records.length} matching Doorable record${records.length === 1 ? "" : "s"} available for assignment.</p>
+        <div class="builder-match-list">
+          ${records.length ? records.map((record) => `
+            <div class="builder-match-row">
+              <strong>${escapeHtml(record.character)}</strong>
+              <span>${escapeHtml(record.franchise)} | ${escapeHtml(record.rarity)}</span>
+              <code>${escapeHtml(record.imageId)}</code>
+            </div>
+          `).join("") : '<p class="muted small">No master records with imageId values match this scope.</p>'}
+        </div>
+      </div>
+    `;
+  }
+
+  function renderImagePackBuilderWarnings() {
+    if (!imagePackBuilder.csvWarnings.length) {
+      return "";
+    }
+
+    return `
+      <div class="builder-warning-list">
+        <p><strong>Mapping warnings</strong></p>
+        <ul>
+          ${imagePackBuilder.csvWarnings.map((warning) => `<li>${escapeHtml(warning)}</li>`).join("")}
+        </ul>
+      </div>
+    `;
+  }
+
+  function renderImagePackBuilderImageRow(item, candidateRecords, validation) {
+    const record = item.assignmentId ? getImagePackBuilderRecordByImageId(item.assignmentId) : null;
+    const isDuplicate = item.assignmentId && validation.duplicateImageIds.includes(item.assignmentId);
+    const isInvalid = item.assignmentId && !record;
+    const isOutsideSeries = record && !imagePackBuilder.allSeries && !isRecordInImagePackBuilderScope(record);
+    const status = getImagePackBuilderItemStatus(item, record, { isDuplicate, isInvalid, isOutsideSeries });
+    const options = getImagePackBuilderAssignmentOptions(item, candidateRecords);
+
+    return `
+      <article class="builder-image-row">
+        <div class="builder-thumb ${item.supported ? "" : "is-unsupported"}">
+          ${item.supported ? `<img src="${escapeAttr(item.previewUrl)}" alt="${escapeAttr(item.originalFileName)}">` : "<span>Unsupported</span>"}
+        </div>
+        <div class="builder-image-body">
+          <div class="builder-image-head">
+            <div>
+              <h4>${escapeHtml(item.originalFileName)}</h4>
+              <p class="muted small">${escapeHtml(item.mimeType || "Unknown type")} | ${formatBytes(item.size)}</p>
+            </div>
+            <span class="chip ${status.className}">${escapeHtml(status.label)}</span>
+          </div>
+          ${item.supported ? `
+            <label class="field">
+              <span>Assigned Doorable</span>
+              <select data-builder-assign="${escapeAttr(item.uid)}" ${isImagePackBuilderScopeReady() ? "" : "disabled"}>
+                <option value="">Unassigned</option>
+                ${options.map((option) => `<option value="${escapeAttr(option.imageId)}" ${item.assignmentId === option.imageId ? "selected" : ""}>${escapeHtml(formatImagePackBuilderOption(option))}</option>`).join("")}
+              </select>
+            </label>
+            ${record ? `
+              <p class="muted small">
+                Assigned: ${escapeHtml(record.character)} | ${escapeHtml(record.series)} | ${escapeHtml(record.franchise)}<br>
+                imageId: <code>${escapeHtml(record.imageId)}</code><br>
+                Exported ZIP filename: <code>${escapeHtml(getBuiltImageExportName(item, record.imageId))}</code>
+              </p>
+            ` : '<p class="muted small">No Doorable assigned yet.</p>'}
+            <div class="form-actions">
+              <button class="secondary-button" type="button" data-builder-clear-assignment="${escapeAttr(item.uid)}" ${item.assignmentId ? "" : "disabled"}>Clear Assignment</button>
+            </div>
+          ` : '<p class="muted small">This file will be skipped because it is not JPG, JPEG, PNG, or WEBP.</p>'}
+        </div>
+      </article>
+    `;
+  }
+
+  function renderImagePackBuilderSummary(validation) {
+    const blockers = [];
+    if (validation.duplicateImageIds.length) {
+      blockers.push(`Duplicate imageId assignments: ${validation.duplicateImageIds.join(", ")}`);
+    }
+    if (validation.invalidImageIds.length) {
+      blockers.push(`Invalid imageIds: ${validation.invalidImageIds.join(", ")}`);
+    }
+    if (validation.outsideSelectedSeries.length) {
+      blockers.push(`ImageIds outside selected series: ${validation.outsideSelectedSeries.join(", ")}`);
+    }
+    if (!validation.validImages.length) {
+      blockers.push("No valid assigned images are ready for export.");
+    }
+
+    return `
+      <div class="stat-grid">
+        ${renderStat("Total uploaded images", validation.totalUploaded)}
+        ${renderStat("Supported images", validation.supportedImages)}
+        ${renderStat("Unsupported files", validation.unsupportedFiles.length)}
+        ${renderStat("Assigned images", validation.assignedImages)}
+        ${renderStat("Unassigned images", validation.unassignedImages)}
+        ${renderStat("Duplicate imageIds", validation.duplicateImageIds.length)}
+        ${renderStat("Invalid imageIds", validation.invalidImageIds.length)}
+        ${renderStat("Outside selected series", validation.outsideSelectedSeries.length)}
+        ${renderStat("Ready for export", validation.validImages.length)}
+      </div>
+      ${blockers.length ? `
+        <div class="builder-warning-list">
+          <p><strong>Export blockers</strong></p>
+          <ul>${blockers.map((blocker) => `<li>${escapeHtml(blocker)}</li>`).join("")}</ul>
+        </div>
+      ` : '<p class="muted small">Ready to export. Unassigned and unsupported files will be skipped.</p>'}
+      ${validation.unsupportedFiles.length ? `<p class="muted small id-list">Unsupported files: ${escapeHtml(validation.unsupportedFiles.join(", "))}</p>` : ""}
+    `;
+  }
+
+  async function uploadImagePackBuilderImages() {
+    if (!isImagePackBuilderScopeReady()) {
+      showToast("Select a category and series, or enable All Series, before uploading images.");
+      return;
+    }
+
+    const files = await pickImageFiles();
+    if (!files.length) {
+      return;
+    }
+
+    const items = files.map((file, index) => {
+      const supported = isSupportedImageFile(file);
+      return {
+        uid: `builder-${Date.now()}-${index}-${Math.random().toString(36).slice(2)}`,
+        file,
+        originalFileName: file.name,
+        mimeType: getImageFileMimeType(file),
+        size: file.size,
+        supported,
+        previewUrl: supported ? URL.createObjectURL(file) : "",
+        assignmentId: ""
+      };
+    });
+
+    imagePackBuilder.images.push(...items);
+    imagePackBuilder.csvWarnings = items.some((item) => !item.supported)
+      ? ["Unsupported files were skipped. Use JPG, JPEG, PNG, or WEBP."]
+      : [];
+    renderImagePackBuilder();
+  }
+
+  async function uploadImagePackBuilderCsv() {
+    if (!isImagePackBuilderScopeReady()) {
+      showToast("Select a category and series, or enable All Series, before uploading a mapping CSV.");
+      return;
+    }
+
+    const file = await pickCsvFile();
+    if (!file) {
+      return;
+    }
+
+    const summary = applyImagePackBuilderCsv(await file.text());
+    renderImagePackBuilder();
+    window.alert(
+      "Mapping CSV Summary\n\n" +
+      `Rows processed: ${summary.rowsProcessed}\n` +
+      `Assignments applied: ${summary.assignmentsApplied}\n` +
+      `Warnings: ${imagePackBuilder.csvWarnings.length}`
+    );
+  }
+
+  function applyImagePackBuilderCsv(text) {
+    const expectedHeader = ["originalFileName", "imageId"];
+    const parsed = parseCsvRows(text);
+    const warnings = [...parsed.invalidRows.map((row) => `Row ${row.row}: ${row.errors.join(" ")}`)];
+    const summary = {
+      rowsProcessed: 0,
+      assignmentsApplied: 0
+    };
+
+    if (!parsed.rows.length) {
+      imagePackBuilder.csvWarnings = [`CSV file must include a header row: ${expectedHeader.join(",")}.`];
+      return summary;
+    }
+
+    const header = parsed.rows[0].map((value, index) => index === 0 ? value.replace(/^\uFEFF/, "").trim() : value.trim());
+    const headerMatches = header.length === expectedHeader.length &&
+      expectedHeader.every((key, index) => header[index] === key);
+
+    if (!headerMatches) {
+      imagePackBuilder.csvWarnings = [`Header must be exactly: ${expectedHeader.join(",")}.`];
+      return summary;
+    }
+
+    const uploadedByName = new Map();
+    const duplicateFileNames = new Set();
+    imagePackBuilder.images.forEach((item) => {
+      if (uploadedByName.has(item.originalFileName)) {
+        duplicateFileNames.add(item.originalFileName);
+      } else {
+        uploadedByName.set(item.originalFileName, item);
+      }
+    });
+    duplicateFileNames.forEach((name) => warnings.push(`Multiple uploaded files are named "${name}". Mapping by filename may be ambiguous.`));
+
+    const mappedFileNames = new Set();
+    const mappedImageIds = [];
+    const assignments = [];
+    const outsideSeriesAssignments = [];
+
+    parsed.rows.slice(1).forEach((row, index) => {
+      const rowNumber = index + 2;
+      if (row.length === 1 && !row[0].trim()) {
+        return;
+      }
+
+      summary.rowsProcessed += 1;
+      if (row.length !== expectedHeader.length) {
+        warnings.push(`Row ${rowNumber}: Expected 2 columns but found ${row.length}.`);
+        return;
+      }
+
+      const originalFileName = row[0].trim();
+      const imageId = row[1].trim();
+      if (!originalFileName || !imageId) {
+        warnings.push(`Row ${rowNumber}: originalFileName and imageId are required.`);
+        return;
+      }
+
+      mappedFileNames.add(originalFileName);
+      mappedImageIds.push(imageId);
+      const image = uploadedByName.get(originalFileName);
+      if (!image) {
+        warnings.push(`Row ${rowNumber}: "${originalFileName}" was not found in the uploaded images.`);
+        return;
+      }
+      if (!image.supported) {
+        warnings.push(`Row ${rowNumber}: "${originalFileName}" is not a supported image file.`);
+        return;
+      }
+
+      const record = getImagePackBuilderRecordByImageId(imageId);
+      if (!record) {
+        warnings.push(`Row ${rowNumber}: imageId "${imageId}" does not exist in the current master database.`);
+        assignments.push({ image, imageId });
+        return;
+      }
+
+      if (!imagePackBuilder.allSeries && !isRecordInImagePackBuilderScope(record)) {
+        warnings.push(`Row ${rowNumber}: imageId "${imageId}" belongs to ${record.category} / ${record.series}, not the selected series.`);
+        outsideSeriesAssignments.push({ image, imageId });
+        return;
+      }
+
+      assignments.push({ image, imageId });
+    });
+
+    const duplicateImageIds = getDuplicateValues(mappedImageIds);
+    duplicateImageIds.forEach((imageId) => warnings.push(`Mapping CSV assigns imageId "${imageId}" more than once.`));
+
+    imagePackBuilder.images
+      .filter((item) => item.supported && !mappedFileNames.has(item.originalFileName))
+      .forEach((item) => warnings.push(`Uploaded image "${item.originalFileName}" is not listed in the mapping CSV.`));
+
+    let acceptedOutsideAssignments = [];
+    if (outsideSeriesAssignments.length) {
+      const switchToAllSeries = window.confirm(
+        `${outsideSeriesAssignments.length} mapped imageId${outsideSeriesAssignments.length === 1 ? "" : "s"} belong outside the selected series.\n\n` +
+        "Switch to All Series mode to accept those rows?\n\nCancel keeps the selected-series scope and rejects those outside-series rows."
+      );
+      if (switchToAllSeries) {
+        imagePackBuilder.allSeries = true;
+        acceptedOutsideAssignments = outsideSeriesAssignments;
+        warnings.push("All Series mode was enabled to accept outside-series mapping rows.");
+      } else {
+        warnings.push("Outside-series mapping rows were rejected. Switch to All Series mode if this CSV intentionally spans multiple series.");
+      }
+    }
+
+    [...assignments, ...acceptedOutsideAssignments].forEach(({ image, imageId }) => {
+      image.assignmentId = imageId;
+      summary.assignmentsApplied += 1;
+    });
+
+    imagePackBuilder.csvWarnings = warnings;
+    return summary;
+  }
+
+  function clearImagePackBuilderAssignment(uid) {
+    const item = imagePackBuilder.images.find((image) => image.uid === uid);
+    if (item) {
+      item.assignmentId = "";
+      renderImagePackBuilder();
+    }
+  }
+
+  function assignImagePackBuilderImage(uid, imageId) {
+    const item = imagePackBuilder.images.find((image) => image.uid === uid);
+    if (!item) {
+      return;
+    }
+
+    item.assignmentId = imageId;
+    renderImagePackBuilder();
+  }
+
+  async function exportBuiltImagePackZip() {
+    try {
+      assertZipSupport();
+      const validation = getImagePackBuilderValidation();
+      if (!validation.canExport) {
+        showToast("Fix validation blockers before exporting the image pack.");
+        return;
+      }
+
+      const files = [];
+      const manifest = [];
+      validation.validImages.forEach((item) => {
+        const record = getImagePackBuilderRecordByImageId(item.assignmentId);
+        const exportedFileName = getBuiltImageExportName(item, item.assignmentId);
+        files.push({
+          name: exportedFileName,
+          data: item.file,
+          lastModified: item.file.lastModified
+        });
+        manifest.push({
+          originalFileName: item.originalFileName,
+          exportedFileName,
+          imageId: item.assignmentId,
+          mimeType: item.mimeType,
+          size: item.size,
+          assignedCharacter: record?.character || "",
+          assignedSeries: record?.series || "",
+          assignedFranchise: record?.franchise || ""
+        });
+      });
+
+      files.push({
+        name: "image_manifest.json",
+        data: JSON.stringify(manifest, null, 2)
+      });
+
+      const blob = await zip.createZip(files);
+      await downloadBlob(blob, `doorables_image_pack_${dateStamp()}.zip`);
+      window.alert(
+        "Image Pack ZIP Exported\n\n" +
+        `Images exported: ${manifest.length}\n` +
+        `Unassigned images skipped: ${validation.unassignedImages}\n` +
+        `Unsupported files skipped: ${validation.unsupportedFiles.length}\n\n` +
+        "Import this ZIP with Settings > Images > Import Image Pack ZIP when you are ready."
+      );
+    } catch (error) {
+      showToast(error.message || "Image pack builder export failed.");
+    }
+  }
+
+  function getImagePackBuilderCandidates() {
+    let records = state.master.filter((record) => record.imageId);
+    if (!imagePackBuilder.allSeries) {
+      records = records.filter((record) => isRecordInImagePackBuilderScope(record));
+    }
+
+    const query = imagePackBuilder.search.trim().toLowerCase();
+    if (query) {
+      records = records.filter((record) => [
+        record.character,
+        record.franchise,
+        record.rarity,
+        record.imageId
+      ].some((value) => String(value || "").toLowerCase().includes(query)));
+    }
+
+    return [...records].sort(imagePackBuilder.allSeries ? compareSeriesFranchiseCharacter : compareFranchiseCharacter);
+  }
+
+  function getImagePackBuilderAssignmentOptions(item, candidateRecords) {
+    const byImageId = new Map(candidateRecords.map((record) => [record.imageId, record]));
+    if (item.assignmentId && !byImageId.has(item.assignmentId)) {
+      const assigned = getImagePackBuilderRecordByImageId(item.assignmentId);
+      if (assigned) {
+        byImageId.set(assigned.imageId, assigned);
+      }
+    }
+
+    return [...byImageId.values()].sort(imagePackBuilder.allSeries ? compareSeriesFranchiseCharacter : compareFranchiseCharacter);
+  }
+
+  function getDisplayedImagePackBuilderImages() {
+    const images = imagePackBuilder.showUnassignedOnly
+      ? imagePackBuilder.images.filter((item) => item.supported && !item.assignmentId)
+      : imagePackBuilder.images;
+
+    return images;
+  }
+
+  function getImagePackBuilderValidation() {
+    const supported = imagePackBuilder.images.filter((item) => item.supported);
+    const assigned = supported.filter((item) => item.assignmentId);
+    const assignedIds = assigned.map((item) => item.assignmentId);
+    const duplicateImageIds = getDuplicateValues(assignedIds);
+    const duplicateSet = new Set(duplicateImageIds);
+    const invalidImageIds = [];
+    const outsideSelectedSeries = [];
+    const validImages = [];
+
+    assigned.forEach((item) => {
+      const record = getImagePackBuilderRecordByImageId(item.assignmentId);
+      if (!record) {
+        invalidImageIds.push(item.assignmentId);
+        return;
+      }
+
+      if (!imagePackBuilder.allSeries && !isRecordInImagePackBuilderScope(record)) {
+        outsideSelectedSeries.push(item.assignmentId);
+        return;
+      }
+
+      if (!duplicateSet.has(item.assignmentId)) {
+        validImages.push(item);
+      }
+    });
+
+    const uniqueInvalidImageIds = [...new Set(invalidImageIds)].sort(compareText);
+    const uniqueOutsideSelectedSeries = [...new Set(outsideSelectedSeries)].sort(compareText);
+
+    return {
+      totalUploaded: imagePackBuilder.images.length,
+      supportedImages: supported.length,
+      unsupportedFiles: imagePackBuilder.images.filter((item) => !item.supported).map((item) => item.originalFileName),
+      assignedImages: assigned.length,
+      unassignedImages: supported.filter((item) => !item.assignmentId).length,
+      duplicateImageIds,
+      invalidImageIds: uniqueInvalidImageIds,
+      outsideSelectedSeries: uniqueOutsideSelectedSeries,
+      validImages,
+      canExport: validImages.length > 0 &&
+        !duplicateImageIds.length &&
+        !uniqueInvalidImageIds.length &&
+        !uniqueOutsideSelectedSeries.length
+    };
+  }
+
+  function getImagePackBuilderItemStatus(item, record, flags) {
+    if (!item.supported) {
+      return { label: "Unsupported", className: "is-red" };
+    }
+    if (!item.assignmentId) {
+      return { label: "Unassigned", className: "" };
+    }
+    if (flags.isInvalid) {
+      return { label: "Invalid imageId", className: "is-red" };
+    }
+    if (flags.isDuplicate) {
+      return { label: "Duplicate", className: "is-red" };
+    }
+    if (flags.isOutsideSeries) {
+      return { label: "Outside series", className: "is-red" };
+    }
+    if (record) {
+      return { label: "Assigned", className: "is-green" };
+    }
+    return { label: "Unassigned", className: "" };
+  }
+
+  function isRecordInImagePackBuilderScope(record) {
+    return Boolean(
+      imagePackBuilder.category &&
+      imagePackBuilder.series &&
+      record.category === imagePackBuilder.category &&
+      record.series === imagePackBuilder.series
+    );
+  }
+
+  function getImagePackBuilderRecordByImageId(imageId) {
+    return state.master.find((record) => record.imageId === imageId) || null;
+  }
+
+  function formatImagePackBuilderOption(record) {
+    const seriesPrefix = imagePackBuilder.allSeries ? `${record.series} | ` : "";
+    return `${seriesPrefix}${record.character} | ${record.franchise} | ${record.rarity} | ${record.imageId}`;
+  }
+
+  function getBuiltImageExportName(item, imageId) {
+    const extension = getImageFileExtension(item.file) || mimeToExtension(item.mimeType);
+    return `${safeZipNamePart(imageId)}.${extension}`;
+  }
+
+  function getImageFileMimeType(file) {
+    if (IMAGE_FILE_TYPES.includes(file.type)) {
+      return file.type;
+    }
+
+    const extension = getImageFileExtension(file);
+    return IMAGE_EXTENSION_TO_MIME[extension] || file.type || "";
+  }
+
+  function getImageFileExtension(file) {
+    const match = /\.([^.]+)$/.exec(file.name || "");
+    const extension = match ? match[1].toLowerCase() : "";
+    if (IMAGE_EXTENSION_TO_MIME[extension]) {
+      return extension;
+    }
+    return "";
+  }
+
+  function safeZipNamePart(value) {
+    return String(value || "image").trim().replace(/[\\/]/g, "_") || "image";
+  }
+
+  function getDuplicateValues(values) {
+    const counts = new Map();
+    values.filter(Boolean).forEach((value) => counts.set(value, (counts.get(value) || 0) + 1));
+    return [...counts.entries()]
+      .filter(([, count]) => count > 1)
+      .map(([value]) => value)
+      .sort(compareText);
+  }
+
   // Import and export actions.
   async function pickAndImport(type) {
     try {
@@ -1184,7 +2259,36 @@
 
       const json = JSON.parse(await file.text());
       const validation = validateImportPayload(type, json);
-      if (!validation.ok) {
+      if (validation.invalidRows.length) {
+        showImportValidationReport(type, validation);
+        return;
+      }
+
+      let importRecords = validation.records;
+      let orphanImportSummary = null;
+
+      if (type === "collection" && validation.orphanRows.length) {
+        const choice = await chooseCollectionOrphanImport(validation);
+        if (choice !== "valid-only") {
+          showToast("Collection import canceled.");
+          return;
+        }
+
+        const orphanIds = new Set(validation.orphanRows.map((row) => row.id));
+        importRecords = validation.records.filter((record) => !orphanIds.has(record.id));
+        orphanImportSummary = {
+          totalRows: Array.isArray(json) ? json.length : validation.records.length,
+          importedRows: importRecords.length,
+          skippedOrphanRows: validation.orphanRows.length,
+          skippedOrphanIds: validation.orphanRows.map((row) => row.id).sort(compareText)
+        };
+
+        if (!importRecords.length) {
+          showCollectionImportValidOnlySummary(orphanImportSummary);
+          showToast("No valid collection records were available to import.");
+          return;
+        }
+      } else if (!validation.ok) {
         showImportValidationReport(type, validation);
         return;
       }
@@ -1194,14 +2298,23 @@
         return;
       }
 
-      const mode = askImportMode(type, validation.records);
+      const mode = askImportMode(type, importRecords);
       if (!mode) {
         showToast("Import canceled.");
         return;
       }
 
-      const count = type === "master" ? await db.importMaster(json, mode) : await db.importCollection(json, mode);
+      const count = type === "master" ? await db.importMaster(importRecords, mode) : await db.importCollection(importRecords, mode);
       await refreshData();
+      if (type === "master" && mode === "replace") {
+        alertOrphanCollectionRecordsAfterMasterReplace();
+      }
+
+      if (orphanImportSummary) {
+        orphanImportSummary.importedRows = count;
+        showCollectionImportValidOnlySummary(orphanImportSummary);
+      }
+
       showToast(`${mode === "replace" ? "Replaced" : "Merged"} ${count} ${type} record${count === 1 ? "" : "s"}.`);
     } catch (error) {
       showToast(error.message || "Import failed. Check that the file is valid JSON.");
@@ -1244,6 +2357,9 @@
 
       const count = await db.importMaster(validation.records, mode);
       await refreshData();
+      if (mode === "replace") {
+        alertOrphanCollectionRecordsAfterMasterReplace();
+      }
       showToast(`${mode === "replace" ? "Replaced" : "Merged"} ${count} master record${count === 1 ? "" : "s"} from CSV.`);
     } catch (error) {
       showToast(error.message || "CSV import failed. Check that the file is valid CSV.");
@@ -1290,7 +2406,11 @@
     }
 
     if (validation.orphanRows.length) {
-      lines.push("", "Orphan collection IDs not found in the master database:");
+      lines.push(
+        "",
+        "Orphan collection IDs not found in the master database:",
+        "Orphan collection IDs are records in your collection file that do not exist in your current master database. Import the matching master database first, or remove these orphan records."
+      );
       validation.orphanRows.slice(0, 20).forEach((issue) => {
         lines.push(`Row ${issue.row}: ${issue.id}`);
       });
@@ -1311,6 +2431,100 @@
     }
 
     window.alert(lines.join("\n"));
+  }
+
+  function chooseCollectionOrphanImport(validation) {
+    const orphanIds = validation.orphanRows.map((row) => row.id).sort(compareText);
+    const validCount = validation.records.length - validation.orphanRows.length;
+
+    return new Promise((resolve) => {
+      elements.modalTitle.textContent = "Orphan Collection IDs";
+      elements.modalBody.innerHTML = `
+        <div class="list-stack">
+          <div class="plain-row">
+            <p><strong>Collection import contains orphan IDs.</strong></p>
+            <p class="muted small">Orphan collection IDs are records in your collection file that do not exist in your current master database. Import the matching master database first, remove these orphan records, or import only the valid matching records.</p>
+          </div>
+          <div class="stat-grid">
+            ${renderStat("Total rows", validation.records.length)}
+            ${renderStat("Valid matching rows", validCount)}
+            ${renderStat("Skipped orphan rows", validation.orphanRows.length)}
+          </div>
+          <div class="plain-row">
+            <p><strong>Orphan IDs</strong></p>
+            <p class="muted small id-list">${formatIdList(orphanIds).map(escapeHtml).join("<br>")}</p>
+          </div>
+          <div class="form-actions">
+            <button class="primary-button" type="button" data-orphan-import-choice="valid-only">Import Valid Records Only</button>
+            <button class="secondary-button" type="button" data-orphan-import-choice="cancel">Cancel Import</button>
+          </div>
+        </div>
+      `;
+      elements.modal.hidden = false;
+
+      const handler = (event) => {
+        const button = event.target.closest("[data-orphan-import-choice]");
+        if (!button) {
+          return;
+        }
+
+        resolvePendingModalChoice(button.dataset.orphanImportChoice);
+      };
+
+      pendingModalResolve = resolve;
+      pendingModalCleanup = () => elements.modalBody.removeEventListener("click", handler);
+      elements.modalBody.addEventListener("click", handler);
+    });
+  }
+
+  function resolvePendingModalChoice(choice) {
+    if (!pendingModalResolve) {
+      return false;
+    }
+
+    const resolve = pendingModalResolve;
+    const cleanup = pendingModalCleanup;
+    pendingModalResolve = null;
+    pendingModalCleanup = null;
+
+    if (cleanup) {
+      cleanup();
+    }
+
+    elements.modal.hidden = true;
+    elements.modalBody.innerHTML = "";
+    resolve(choice);
+    return true;
+  }
+
+  function showCollectionImportValidOnlySummary(summary) {
+    const lines = [
+      "Collection Import Summary",
+      "",
+      `Total rows: ${summary.totalRows}`,
+      `Imported rows: ${summary.importedRows}`,
+      `Skipped orphan rows: ${summary.skippedOrphanRows}`
+    ];
+
+    if (summary.skippedOrphanIds.length) {
+      lines.push("", "Skipped orphan IDs:", ...formatIdList(summary.skippedOrphanIds));
+    }
+
+    window.alert(lines.join("\n"));
+  }
+
+  function alertOrphanCollectionRecordsAfterMasterReplace() {
+    const orphanIds = getOrphanCollectionRecords().map((record) => record.id).sort(compareText);
+    if (!orphanIds.length) {
+      return;
+    }
+
+    window.alert(
+      "Master Database Replaced\n\n" +
+      `${orphanIds.length} collection record${orphanIds.length === 1 ? "" : "s"} no longer match the current master database.\n\n` +
+      "They will be skipped from default collection exports. Use Settings > Maintenance > Remove Orphan Collection Records to remove them safely.\n\n" +
+      `Orphan IDs:\n${formatIdList(orphanIds).join("\n")}`
+    );
   }
 
   function showCsvImportReport(summary) {
@@ -1475,6 +2689,280 @@
     });
   }
 
+  function pickZipFile() {
+    return new Promise((resolve) => {
+      const input = document.createElement("input");
+      input.type = "file";
+      input.accept = ZIP_FILE_EXTENSIONS;
+      input.addEventListener("change", () => resolve(input.files[0] || null));
+      input.click();
+    });
+  }
+
+  function assertZipSupport() {
+    if (!zip || typeof zip.readZip !== "function" || typeof zip.createZip !== "function") {
+      throw new Error("ZIP support is not available. Make sure zip-utils.js is included with the app.");
+    }
+  }
+
+  function getMasterImageIdSet(masterRecords = state.master) {
+    return new Set(masterRecords.map((record) => record.imageId).filter(Boolean));
+  }
+
+  function getZipImageInfo(name) {
+    const fileName = String(name || "").split("/").pop();
+    const match = /^(.*)\.([^.]+)$/.exec(fileName);
+    if (!match) {
+      return null;
+    }
+
+    const imageId = match[1];
+    const extension = match[2].toLowerCase();
+    const mimeType = IMAGE_EXTENSION_TO_MIME[extension];
+    if (!imageId || !mimeType) {
+      return null;
+    }
+
+    return { imageId, extension, mimeType, fileName };
+  }
+
+  function showImagePackImportSummary(summary) {
+    const lines = [
+      "Image Pack Import Summary",
+      "",
+      `Total files found: ${summary.totalFiles}`,
+      `Valid image files: ${summary.validImageFiles}`,
+      `Images matched to master records: ${summary.matchedToMaster}`,
+      `Images imported: ${summary.imported}`,
+      `Images replaced: ${summary.replaced}`,
+      `Images skipped: ${summary.skipped}`,
+      `Unsupported files: ${summary.unsupportedFiles.length}`,
+      `Orphan image files: ${summary.orphanImageFiles.length}`
+    ];
+
+    if (summary.unsupportedFiles.length) {
+      lines.push("", "Unsupported files:", ...formatIdList(summary.unsupportedFiles));
+    }
+
+    if (summary.orphanImageFiles.length) {
+      lines.push("", "Orphan image files:", ...formatIdList(summary.orphanImageFiles));
+    }
+
+    window.alert(lines.join("\n"));
+  }
+
+  async function buildImageZipFiles(images, prefix) {
+    const manifest = [];
+    const files = [];
+
+    for (const image of images.sort((a, b) => compareText(a.imageId, b.imageId))) {
+      const mimeType = image.mimeType || image.blob?.type || "application/octet-stream";
+      const extension = mimeToExtension(mimeType);
+      const safeImageId = String(image.imageId || "image").replace(/[\\/]/g, "_");
+      const exportedFileName = `${safeImageId}.${extension}`;
+      files.push({
+        name: `${prefix}${exportedFileName}`,
+        data: image.blob,
+        lastModified: image.lastModified
+      });
+      manifest.push({
+        imageId: image.imageId,
+        mimeType,
+        size: image.size || image.blob?.size || 0,
+        lastModified: image.lastModified || "",
+        exportedFileName
+      });
+    }
+
+    return { files, manifest };
+  }
+
+  function mimeToExtension(mimeType) {
+    if (mimeType === "image/webp") {
+      return "webp";
+    }
+    if (mimeType === "image/png") {
+      return "png";
+    }
+    if (mimeType === "image/jpeg" || mimeType === "image/jpg") {
+      return "jpg";
+    }
+    return "webp";
+  }
+
+  function dateStamp(date = new Date()) {
+    return date.toISOString().slice(0, 10);
+  }
+
+  async function downloadBlob(blob, filename) {
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = filename;
+    document.body.append(anchor);
+    anchor.click();
+    anchor.remove();
+    URL.revokeObjectURL(url);
+  }
+
+  async function markBackupExported(timestamp) {
+    state.storage.lastBackupDate = await db.recordBackupExport(timestamp);
+    state.storage.counts = await db.getStorageStats();
+    if (state.tab === "settings") {
+      render();
+    }
+  }
+
+  function getReferenceData() {
+    return {
+      categories: db.categories,
+      rarities: db.rarities,
+      seriesByCategory: db.seriesByCategory
+    };
+  }
+
+  async function parseFullVaultBackup(file) {
+    const entries = await zip.readZip(file);
+    const entryMap = new Map(entries.filter((entry) => !entry.isDirectory).map((entry) => [entry.name, entry]));
+    const invalidFiles = [];
+    const blockers = [];
+    const master = await readBackupJson(entryMap, "master_database.json", true, invalidFiles);
+    const collection = await readBackupJson(entryMap, "collection.json", true, invalidFiles);
+    const activity = await readBackupJson(entryMap, "activity.json", false, invalidFiles) || [];
+    const meta = await readBackupJson(entryMap, "settings.json", false, invalidFiles) || [];
+    const metadata = await readBackupJson(entryMap, "metadata.json", true, invalidFiles) || {};
+    const imageManifest = await readBackupJson(entryMap, "images/image_manifest.json", false, invalidFiles) || [];
+    const manifestByFile = new Map((Array.isArray(imageManifest) ? imageManifest : []).map((item) => [item.exportedFileName, item]));
+
+    ensureBackupArray(master, "master_database.json", invalidFiles);
+    ensureBackupArray(collection, "collection.json", invalidFiles);
+    ensureBackupArray(activity, "activity.json", invalidFiles);
+    ensureBackupArray(meta, "settings.json", invalidFiles);
+    ensureBackupArray(imageManifest, "images/image_manifest.json", invalidFiles);
+
+    if (invalidFiles.length) {
+      blockers.push(...invalidFiles);
+    }
+
+    const masterValidation = db.validateMasterRecords(master || []);
+    if (!masterValidation.ok) {
+      blockers.push(...masterValidation.invalidRows.map((row) => `Master row ${row.row}: ${row.errors.join(" ")}`));
+    }
+
+    const collectionValidation = db.validateCollectionRecords(
+      collection || [],
+      masterValidation.records.map((record) => record.id)
+    );
+    if (collectionValidation.invalidRows.length) {
+      blockers.push(...collectionValidation.invalidRows.map((row) => `Collection row ${row.row}: ${row.errors.join(" ")}`));
+    }
+    if (collectionValidation.orphanRows.length) {
+      blockers.push(...collectionValidation.orphanRows.map((row) => `Orphan collection row ${row.row}: ${row.id}`));
+    }
+
+    const masterImageIds = getMasterImageIdSet(masterValidation.records);
+    const imageEntries = entries.filter((entry) => !entry.isDirectory && entry.name.startsWith("images/") && entry.name !== "images/image_manifest.json");
+    const images = [];
+    const orphanImages = [];
+
+    for (const entry of imageEntries) {
+      const info = getZipImageInfo(entry.name);
+      if (!info) {
+        blockers.push(`Unsupported image file: ${entry.name}`);
+        continue;
+      }
+
+      if (!masterImageIds.has(info.imageId)) {
+        orphanImages.push(info.imageId);
+        continue;
+      }
+
+      const blob = await entry.blob(info.mimeType);
+      const manifest = manifestByFile.get(info.fileName) || {};
+      images.push({
+        imageId: info.imageId,
+        blob,
+        mimeType: manifest.mimeType || info.mimeType,
+        size: blob.size,
+        lastModified: manifest.lastModified || metadata.backupDate || new Date().toISOString()
+      });
+    }
+
+    return {
+      metadata,
+      master,
+      collection,
+      activity,
+      meta,
+      masterValidation,
+      collectionValidation,
+      imageEntries,
+      images,
+      orphanImages: [...new Set(orphanImages)].sort(compareText),
+      invalidFiles,
+      blockers,
+      payload: {
+        master: master || [],
+        collection: collection || [],
+        activity: Array.isArray(activity) ? activity : [],
+        meta: Array.isArray(meta) ? meta : [],
+        images
+      }
+    };
+  }
+
+  async function readBackupJson(entryMap, name, required, invalidFiles) {
+    const entry = entryMap.get(name);
+    if (!entry) {
+      if (required) {
+        invalidFiles.push(`Missing required file: ${name}`);
+      }
+      return null;
+    }
+
+    try {
+      return JSON.parse(await entry.text());
+    } catch (error) {
+      invalidFiles.push(`Invalid JSON file: ${name}`);
+      return null;
+    }
+  }
+
+  function ensureBackupArray(value, name, invalidFiles) {
+    if (value !== null && !Array.isArray(value)) {
+      invalidFiles.push(`${name} must contain a JSON array.`);
+    }
+  }
+
+  function showRestorePreview(preview) {
+    const lines = [
+      "Full Vault Restore Preview",
+      "",
+      `App backup version: ${preview.metadata.appVersion || "Unknown"}`,
+      `Backup date: ${preview.metadata.backupDate || "Unknown"}`,
+      `Master records found: ${Array.isArray(preview.master) ? preview.master.length : 0}`,
+      `Collection records found: ${Array.isArray(preview.collection) ? preview.collection.length : 0}`,
+      `Activity records found: ${Array.isArray(preview.activity) ? preview.activity.length : 0}`,
+      `Images found: ${preview.imageEntries.length}`,
+      `Valid images to restore: ${preview.images.length}`,
+      `Orphan collection records: ${preview.collectionValidation.orphanRows.length}`,
+      `Orphan images: ${preview.orphanImages.length}`,
+      `Invalid files/issues: ${preview.blockers.length}`
+    ];
+
+    if (preview.orphanImages.length) {
+      lines.push("", "Orphan images will be skipped:", ...formatIdList(preview.orphanImages));
+    }
+
+    if (preview.blockers.length) {
+      lines.push("", "Restore is blocked by:", ...formatIdList(preview.blockers));
+    } else {
+      lines.push("", "No blocking validation errors found. You will be asked to type RESTORE before anything is replaced.");
+    }
+
+    window.alert(lines.join("\n"));
+  }
+
   // CSV import is intentionally narrow: it accepts only the master database
   // columns in the documented order, then reuses the JSON master validator.
   function parseMasterCsv(text) {
@@ -1596,19 +3084,8 @@
 
   async function exportJson(filename, data) {
     const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
-    const url = URL.createObjectURL(blob);
-    const anchor = document.createElement("a");
-    anchor.href = url;
-    anchor.download = filename;
-    document.body.append(anchor);
-    anchor.click();
-    anchor.remove();
-    URL.revokeObjectURL(url);
-    state.storage.lastBackupDate = await db.recordBackupExport();
-    state.storage.counts = await db.getStorageStats();
-    if (state.tab === "settings") {
-      render();
-    }
+    await downloadBlob(blob, filename);
+    await markBackupExported();
     showToast(`Exported ${filename}.`);
   }
 
@@ -1987,6 +3464,7 @@
   }
 
   async function closeModal() {
+    cleanupImagePackBuilder();
     elements.modal.hidden = true;
     elements.modalBody.innerHTML = "";
     await refreshData();
@@ -2011,6 +3489,11 @@
       ...db.createEmptyCollection(id),
       ...state.collectionMap.get(id)
     };
+  }
+
+  function getOrphanCollectionRecords(collectionRecords = state.collection, masterRecords = state.master) {
+    const masterIds = new Set(masterRecords.map((record) => record.id));
+    return collectionRecords.filter((record) => record.id && !masterIds.has(record.id));
   }
 
   function getMasterName(id) {
@@ -2359,6 +3842,16 @@
     }
 
     return value;
+  }
+
+  function formatIdList(ids, limit = 100) {
+    const uniqueIds = [...new Set(ids.filter(Boolean))];
+    const lines = uniqueIds.slice(0, limit).map((id) => `- ${id}`);
+    if (uniqueIds.length > limit) {
+      lines.push(`...and ${uniqueIds.length - limit} more.`);
+    }
+
+    return lines;
   }
 
   function formatBytes(value) {

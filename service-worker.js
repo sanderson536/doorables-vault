@@ -1,4 +1,4 @@
-const APP_VERSION = "1.1.0";
+const APP_VERSION = "1.3.0";
 const CACHE_NAME = `doorables-vault-${APP_VERSION}`;
 
 const CORE_ASSETS = [
@@ -7,6 +7,7 @@ const CORE_ASSETS = [
   "./styles.css",
   "./app.js",
   "./db.js",
+  "./zip-utils.js",
   "./manifest.json",
   "./service-worker.js",
   "./icons/icon-192.png",
@@ -19,6 +20,7 @@ const CORE_PATHS = new Set([
   "/styles.css",
   "/app.js",
   "/db.js",
+  "/zip-utils.js",
   "/manifest.json",
   "/service-worker.js",
   "/icons/icon-192.png",
